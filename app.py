@@ -24,7 +24,7 @@ COLORS = {
     "Público":   "#e74c3c",
     "No gubernamental": "#9b59b6",
 }
-
+#ids
 # IDS invertido: Muy alto = mejor situación = verde, Muy bajo = peor = rojo
 COLORS_IDS = {
     "Muy bajo":  "#c0392b",
