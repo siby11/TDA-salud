@@ -39,7 +39,7 @@ COLORS_IDS = {
 def load_data():
     denue    = pd.read_csv("data/processed/denue_salud_cdmx_clean.csv")
     coneval  = pd.read_csv("data/processed/coneval_ageb_cdmx_limpio.csv")
-    ids      = pd.read_csv("data/processed/ids_ageb_cdmx_limpio.csv")
+    ids      = pd.read_csv("data/processed/ids_ageb_cdmx_limpio_densidad.csv")
     pob_raw  = pd.read_csv("data/processed/base_combinada_limpia.csv")
 
     # Limpiar encoding del CSV de población
