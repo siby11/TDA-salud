@@ -1,0 +1,10 @@
+# Datos crudos (demasiado grandes para GitHub)
+denue_inegi_09_.csv
+
+# Variables de entorno (contienen tokens/URLs privadas)
+.env
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
