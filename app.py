@@ -1708,15 +1708,15 @@ with tab_prior:
         pub_pr = pub_pr[pub_pr["subsector"] == subsec_pr]
 
     # 2. AGEB lookup: CONEVAL + IDS
+    # La normalización de densidad se calcula sobre el universo GLOBAL (todas las AGEBs)
+    # usando rango percentil → distribución uniforme [0,1], sin comprimir zonas de baja densidad
     ageb_pr = coneval.merge(
         ids[["cvegeo", "bajo_desarrollo_norm", "prop_nbi_norm",
              "grado_ids", "grado_ids_num", "poblacion_ids"]],
         on="cvegeo", how="left",
-    )
+    ).copy()
     _dens_raw = ageb_pr["poblacion_ids"] / ageb_pr["area_km2"].replace(0, np.nan)
-    _d99      = _dens_raw.quantile(0.99)
-    ageb_pr   = ageb_pr.copy()
-    ageb_pr["densidad_norm"] = (_dens_raw.clip(upper=_d99) / _d99).fillna(0)
+    ageb_pr["densidad_norm"] = _dens_raw.fillna(0).rank(pct=True)
 
     if mun_pr != "CDMX completa":
         _cve_pr = ageb_pr["cvegeo"].astype(str).str[2:5]
