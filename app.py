@@ -3078,9 +3078,9 @@ Una alta persistencia indica que la brecha es estructural, no un artefacto del m
 
     
     # ══════════════════════════════════════════════════════════════════════════
-    # 4. MODELO DE NEGOCIO / PROPUESTA DE VALOR
+    # 3. MODELO DE NEGOCIO / PROPUESTA DE VALOR
     # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("4 · Propuesta de Valor y Modelo de Aplicación")
+    st.subheader("3 · Propuesta de Valor y Modelo de Aplicación")
 
     col_n1, col_n2 = st.columns([3, 2])
 
