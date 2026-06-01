@@ -335,9 +335,10 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
-tab_datos, tab_complejos, tab_persist, tab_prior, tab_report, tab_compare = st.tabs([
+tab_datos, tab_complejos, tab_persist, tab_prior, tab_report, tab_compare, tab_concl = st.tabs([
     "Datos", "Complejos Simpliciales", "Persistencia Homológica",
     "Priorización de Huecos", "Hallazgos", "Comparación TDA vs K-Means",
+    "Conclusiones y Estrategia",
 ])
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2925,3 +2926,224 @@ with tab_compare:
             f"<b>{_title}</b><br>{_text}</div>",
             unsafe_allow_html=True,
         )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB CONCLUSIONES Y ESTRATEGIA
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_concl:
+
+    st.header("Conclusiones y Estrategia de Intervención")
+    st.caption(
+        "Síntesis de los hallazgos del análisis topológico aplicado al sector salud pública "
+        "en la Ciudad de México, con una propuesta de estrategia de intervención basada en evidencia."
+    )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 1. SÍNTESIS METODOLÓGICA
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("1 · Síntesis del Enfoque Metodológico")
+
+    col_met1, col_met2 = st.columns(2)
+
+    with col_met1:
+        st.markdown("""
+**¿Qué es TDA y por qué aplicarlo a salud pública?**
+
+El Análisis Topológico de Datos (TDA) estudia la *forma* de los datos en lugar de
+solo sus valores numéricos. En el contexto de salud pública, esto permite identificar
+**vacíos estructurales** en la red de establecimientos que métodos convencionales
+como K-Means o análisis de buffer no detectan.
+
+El complejo de Vietoris-Rips construye una representación del espacio de cobertura
+que crece con el radio ε. Cuando ese espacio presenta **agujeros persistentes** (H₁),
+indica zonas rodeadas de servicios pero sin cobertura directa: no son zonas aisladas,
+sino **bolsas de exclusión dentro de una red aparentemente densa**.
+
+La persistencia homológica mide cuánto "sobrevive" cada hueco al aumentar ε.
+Una alta persistencia indica que la brecha es estructural, no un artefacto del muestreo.
+        """)
+
+    with col_met2:
+        # Diagrama del flujo metodológico como tabla visual
+        flujo = pd.DataFrame({
+            "Paso": ["1. Datos", "2. Complejo VR", "3. Homología persistente",
+                     "4. Priorización", "5. Estrategia"],
+            "Herramienta": ["DENUE · CONEVAL · IDS", "Ripser (Vietoris-Rips)",
+                            "Diagramas H₀/H₁ · Betti curves",
+                            "Índice I(H) = P+B+D+R+N", "Mapa de intervención"],
+            "Resultado": ["22,816 unidades georreferenciadas",
+                          "Red de cobertura espacial dinámica",
+                          "Huecos estructurales cuantificados",
+                          "Ranking de prioridad con contexto social",
+                          "Zonas candidatas a nuevas unidades"],
+        })
+        st.dataframe(flujo, width="stretch")
+
+        st.markdown("""
+**Ventaja frente a métodos convencionales**
+
+| Pregunta | Buffer/Isócrona | K-Means | TDA |
+|---|---|---|---|
+| ¿Hay cobertura cerca? | Sí | No | Sí |
+| ¿Hay huecos estructurales? | No | No | **Sí** |
+| ¿Qué zonas priorizar? | Parcial | Parcial | **Sí, con índice** |
+| ¿Sensible a la topología? | No | No | **Sí** |
+        """)
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 2. HALLAZGOS PRINCIPALES
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("2 · Hallazgos Principales del Análisis")
+
+    # Métricas clave del dataset completo (calculadas una vez)
+    _pub_total   = denue[denue["sector"] == "Público"].dropna(subset=["latitud", "longitud"])
+    _priv_total  = denue[denue["sector"] == "Privado"].dropna(subset=["latitud", "longitud"])
+    _ageb_con    = coneval.merge(
+        ids[["cvegeo", "bajo_desarrollo_norm", "prop_nbi_norm", "grado_ids", "poblacion_ids"]],
+        on="cvegeo", how="left"
+    ).dropna(subset=["centroide_lat", "centroide_lon"])
+    _n_pub       = len(_pub_total)
+    _n_priv      = len(_priv_total)
+    _n_ageb      = len(_ageb_con)
+    _pct_pub     = _n_pub / (_n_pub + _n_priv) * 100
+    _alto_rezago = coneval[coneval["grado_rezago_social"].isin(["Alto", "Muy alto"])]
+    _pct_alto    = len(_alto_rezago) / len(coneval) * 100
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Unidades públicas", f"{_n_pub:,}")
+    c2.metric("Unidades privadas", f"{_n_priv:,}")
+    c3.metric("Sector público", f"{_pct_pub:.1f}%")
+    c4.metric("AGEBs analizadas", f"{_n_ageb:,}")
+    c5.metric("AGEBs rezago alto/muy alto", f"{_pct_alto:.1f}%")
+
+    st.markdown("")
+
+    _hallazgos_principales = [
+        (
+            "#2d3436", "#636e72",
+            "Oferta de salud pública concentrada y desigual",
+            "El sector público representa menos de un tercio de las unidades de salud en CDMX. "
+            "La distribución espacial muestra alta concentración en alcaldías centrales "
+            "(Cuauhtémoc, Benito Juárez, Miguel Hidalgo) y déficit estructural en la periferia "
+            "(Milpa Alta, Tláhuac, La Magdalena Contreras). Esta asimetría no es visible "
+            "con indicadores de densidad simple, pero sí con TDA."
+        ),
+        (
+            "#0984e3", "#74b9ff",
+            "Los huecos H₁ son estructurales, no aleatorios",
+            "La persistencia homológica identifica huecos cuya existencia no depende del radio ε "
+            "elegido: sobreviven en un rango amplio de radios, lo que confirma que representan "
+            "vacíos reales en la red de cobertura. Los huecos con persistencia > 1 km indican "
+            "zonas donde la red pública no puede compensar la distancia con ningún ajuste de parámetros."
+        ),
+        (
+            "#6c5ce7", "#a29bfe",
+            "El IDS es el mejor discriminador de vulnerabilidad en CDMX",
+            "A diferencia del rezago social de CONEVAL —calibrado a escala nacional, "
+            "que clasifica la mayoría de AGEBs de CDMX como de rezago bajo o muy bajo—, "
+            "el Índice de Desarrollo Social (IDS) de EVALUA captura desigualdades intraurbanas "
+            "con mayor precisión. Los huecos priorizados con mayor peso en B_i (bajo desarrollo IDS) "
+            "corresponden a zonas con necesidades reales no reflejadas por el indicador federal."
+        ),
+        (
+            "#d63031", "#ff7675",
+            "Coincidencia entre huecos topológicos y vulnerabilidad social",
+            "Los huecos H₁ interiores de mayor persistencia no son aleatorios respecto al "
+            "perfil socioeconómico: tienden a coincidir con AGEBs de IDS bajo y alta proporción "
+            "de NBI. Esto confirma que la brecha de cobertura en salud pública no es geométrica "
+            "solamente, sino que se superpone con las zonas de mayor necesidad social."
+        ),
+        (
+            "#00b894", "#55efc4",
+            "K-Means no puede reemplazar a TDA para este diagnóstico",
+            "El análisis comparativo demuestra que K-Means agrupa AGEBs por similitud de "
+            "atributos pero no puede detectar huecos en la red de servicios. Los huecos TDA "
+            "cruzan múltiples clusters de K-Means, lo que confirma que son una propiedad "
+            "topológica de la red y no un artefacto de la segmentación por variables."
+        ),
+    ]
+
+    for _bg, _bd, _title, _text in _hallazgos_principales:
+        st.markdown(
+            f"<div style='background:#f8f9fa;border-left:5px solid {_bd};"
+            f"padding:14px 18px;border-radius:6px;margin-bottom:10px'>"
+            f"<b style='color:{_bg}'>{_title}</b>"
+            f"<br><span style='color:#444;font-size:0.93em;line-height:1.6'>{_text}</span></div>",
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    
+    # ══════════════════════════════════════════════════════════════════════════
+    # 4. MODELO DE NEGOCIO / PROPUESTA DE VALOR
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("4 · Propuesta de Valor y Modelo de Aplicación")
+
+    col_n1, col_n2 = st.columns([3, 2])
+
+    with col_n1:
+        st.markdown("""
+**¿A quién va dirigido este análisis?**
+
+Este sistema genera valor para tres tipos de actores:
+
+**Sector público (gobierno)**
+- Secretaría de Salud CDMX: priorización de inversión en infraestructura sanitaria
+- Alcaldías: identificación de zonas de exclusión en su territorio
+- SEDESA / IMSS-Bienestar: diseño de redes de atención primaria
+- Evaluaciones de impacto de programas existentes (Médico en tu Casa, etc.)
+
+**Sector académico y OSC**
+- Validación empírica de brechas de cobertura con metodología reproducible
+- Insumo para propuestas de política pública basadas en evidencia topológica
+- Extensión a otros indicadores sociales (educación, agua, movilidad)
+
+**Sector privado (salud y tecnología)**
+- Aseguradoras: identificación de mercados potenciales desatendidos
+- Operadores de clínicas privadas: análisis de localización basado en demanda social
+- Startups de salud digital: zonas objetivo para telemedicina y farmacias con servicios
+        """)
+
+    with col_n2:
+        # Tabla de propuesta de valor
+        _pv = pd.DataFrame({
+            "Dimensión": [
+                "Problema que resuelve",
+                "Diferenciador clave",
+                "Fuentes de datos",
+                "Costo de replicación",
+                "Periodicidad sugerida",
+                "Escalabilidad",
+            ],
+            "Descripción": [
+                "Identificar brechas de cobertura en salud que el análisis tradicional no ve",
+                "TDA detecta huecos estructurales imposibles con buffer, K-Means o regresión",
+                "DENUE (INEGI) · CONEVAL · IDS EVALUA · Censo 2020 — todos públicos y gratuitos",
+                "Bajo: datos abiertos + herramientas open-source (Ripser, Streamlit, Python)",
+                "Anual (actualización DENUE) o semestral con datos administrativos",
+                "Aplicable a cualquier ciudad mexicana con datos DENUE y CONEVAL disponibles",
+            ],
+        })
+        st.dataframe(_pv, width="stretch")
+
+    st.divider()
+
+    
+
+    # ── Cierre ────────────────────────────────────────────────────────────────
+    st.markdown(
+        "<div style='background:#2d3436;color:#dfe6e9;padding:20px 24px;"
+        "border-radius:8px;text-align:center'>"
+        "<b style='font-size:1.1em'>TDA aplicado a Salud Pública — CDMX</b><br>"
+        "<span style='font-size:0.9em'>Este análisis demuestra que la topología de los datos "
+        "de salud revela patrones de exclusión que los métodos convencionales no pueden detectar. "
+        "La persistencia homológica no es solo una herramienta matemática: "
+        "es una lente para identificar dónde el sistema falla estructuralmente "
+        "a quienes más lo necesitan.</span><br><br>"
+        "<small>Fuentes: DENUE 2025 (INEGI) · CONEVAL 2020 · IDS EVALUA CDMX · Censo 2020 (INEGI)</small>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
