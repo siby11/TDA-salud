@@ -1,14 +1,15 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import numpy as np
+from sklearn.metrics.pairwise import haversine_distances
+from ripser import ripser as _ripser_fn
 
 # ── Config ────────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="TDA Salud CDMX",
-    page_icon="🏥",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -33,6 +34,218 @@ COLORS_IDS = {
     "Alto":      "#a8e6a3",
     "Muy alto":  "#2ecc71",
 }
+
+# Mapa clave AGEB → nombre alcaldía (CDMX, entidad 09)
+MUN_MAP = {
+    "002": "Azcapotzalco",        "003": "Coyoacán",
+    "004": "Cuajimalpa de Morelos","005": "Gustavo A. Madero",
+    "006": "Iztacalco",           "007": "Iztapalapa",
+    "008": "La Magdalena Contreras","009": "Milpa Alta",
+    "010": "Álvaro Obregón",      "011": "Tláhuac",
+    "012": "Tlalpan",             "013": "Xochimilco",
+    "014": "Benito Juárez",       "015": "Cuauhtémoc",
+    "016": "Miguel Hidalgo",      "017": "Venustiano Carranza",
+}
+MUN_INV = {v: k for k, v in MUN_MAP.items()}
+
+# ── Helpers TDA ────────────────────────────────────────────────────────────────
+def _dist_km(pts_deg: np.ndarray) -> np.ndarray:
+    """Matriz de distancias haversine en km."""
+    return haversine_distances(np.radians(pts_deg)) * 6371.0
+
+def _dist_cross_km(a_deg: np.ndarray, b_deg: np.ndarray) -> np.ndarray:
+    """Matriz de distancias cruzadas haversine en km (a vs b)."""
+    return haversine_distances(np.radians(a_deg), np.radians(b_deg)) * 6371.0
+
+def _circles(lats, lons, r_km: float, n: int = 32):
+    """Un solo trace con todos los círculos separados por None."""
+    R, angles = 6371.0, np.linspace(0, 2 * np.pi, n + 1)
+    all_lat, all_lon = [], []
+    for lat, lon in zip(lats, lons):
+        c = np.cos(np.radians(lat))
+        all_lat += (lat + np.degrees(r_km / R * np.cos(angles))).tolist() + [None]
+        all_lon += (lon + np.degrees(r_km / R / c * np.sin(angles))).tolist() + [None]
+    return all_lat, all_lon
+
+def _edges(lats, lons, D: np.ndarray, eps: float, max_edges: int = 3000):
+    """Aristas del complejo VR: pares (i,j) con d(i,j) ≤ eps."""
+    el, eo = [], []
+    n, count = len(lats), 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            if D[i, j] <= eps:
+                el += [lats[i], lats[j], None]
+                eo += [lons[i], lons[j], None]
+                count += 1
+                if count >= max_edges:
+                    return el, eo
+    return el, eo
+
+def _barcode_fig(dgm: np.ndarray, title: str, color: str, max_eps: float):
+    """Diagrama de barras de persistencia (barcode) en Plotly."""
+    if len(dgm) == 0:
+        return go.Figure().update_layout(title=title, height=300)
+    births = dgm[:, 0]
+    deaths = np.where(np.isinf(dgm[:, 1]), max_eps * 1.05, dgm[:, 1])
+    pers = deaths - births
+    order = np.argsort(pers)          # menor a mayor persistencia = orden visual
+    x_seg, y_seg = [], []
+    for rank, idx in enumerate(order):
+        x_seg += [float(births[idx]), float(deaths[idx]), None]
+        y_seg += [rank, rank, None]
+    fig = go.Figure(go.Scatter(
+        x=x_seg, y=y_seg, mode="lines",
+        line=dict(color=color, width=2),
+        hoverinfo="skip",
+    ))
+    fig.update_layout(
+        title=title, height=320,
+        xaxis_title="Radio ε (km)", yaxis=dict(showticklabels=False, title="Feature"),
+        margin=dict(l=0, r=0, t=40, b=0),
+    )
+    return fig
+
+def _persistence_fig(dgms, max_eps: float):
+    """Diagrama de persistencia (birth vs death) para H0 y H1."""
+    rows = []
+    for dim, dgm in enumerate(dgms):
+        for b, d in dgm:
+            d_p = min(float(d), max_eps * 1.05) if np.isinf(d) else float(d)
+            rows.append({"Dim": f"H{dim}", "Nacimiento": float(b), "Muerte": d_p,
+                         "Persistencia": d_p - float(b)})
+    if not rows:
+        return go.Figure()
+    df_p = pd.DataFrame(rows)
+    fig = px.scatter(
+        df_p, x="Nacimiento", y="Muerte", color="Dim",
+        color_discrete_map={"H0": "#e74c3c", "H1": "#3498db"},
+        size="Persistencia", size_max=16, opacity=0.75,
+        hover_data={"Persistencia": ":.3f"},
+        title="Diagrama de Persistencia",
+        labels={"Nacimiento": "Nacimiento ε (km)", "Muerte": "Muerte ε (km)"},
+        height=400,
+    )
+    lim = max_eps * 1.05
+    fig.add_shape(type="line", x0=0, y0=0, x1=lim, y1=lim,
+                  line=dict(color="gray", dash="dot", width=1))
+    fig.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+    return fig
+
+@st.cache_data
+def _compute_tda(pts_key: tuple):
+    pts = np.array(pts_key)
+    D = _dist_km(pts)
+    res = _ripser_fn(D, distance_matrix=True, maxdim=1)
+    return res["dgms"], D.tolist()
+
+@st.cache_data
+def _compute_coverage(pub_key: tuple, ageb_key: tuple):
+    D = _dist_cross_km(np.array(pub_key), np.array(ageb_key))
+    return D.min(axis=0).tolist()
+
+@st.cache_data
+def _compute_tda_full(pts_key: tuple):
+    """TDA con cociclos — devuelve dgms, matriz D y centros aproximados de H1."""
+    pts = np.array(pts_key)
+    D   = _dist_km(pts)
+    res = _ripser_fn(D, distance_matrix=True, maxdim=1, do_cocycles=True)
+    dgms_serial = [d.tolist() for d in res["dgms"]]
+    h1_centers  = []
+    if len(res["cocycles"]) > 1:
+        for cocycle in res["cocycles"][1]:
+            if len(cocycle) > 0:
+                verts = set(int(v) for row in cocycle for v in row[:2])
+                h1_centers.append((
+                    float(pts[list(verts), 0].mean()),
+                    float(pts[list(verts), 1].mean()),
+                ))
+    return dgms_serial, D.tolist(), h1_centers
+
+@st.cache_data
+def _compute_grid_coverage(pub_key: tuple, lat0, lat1, lon0, lon1, n: int = 55):
+    """Grilla de distancia al punto público más cercano (km)."""
+    pub  = np.array(pub_key)
+    lats = np.linspace(lat0, lat1, n)
+    lons = np.linspace(lon0, lon1, n)
+    gx, gy = np.meshgrid(lons, lats)
+    grid = np.column_stack([gy.ravel(), gx.ravel()])
+    D    = _dist_cross_km(pub, grid)
+    return grid[:, 0].tolist(), grid[:, 1].tolist(), D.min(axis=0).tolist()
+
+def _dist_pt_seg(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+    """Distancia mínima del punto p al segmento a–b."""
+    ab = b - a
+    t  = np.dot(p - a, ab) / (np.dot(ab, ab) + 1e-12)
+    return float(np.linalg.norm(p - (a + np.clip(t, 0, 1) * ab)))
+
+def _border_dists(centers: list, pts_deg: np.ndarray) -> np.ndarray:
+    """
+    Distancia (km) de cada centro de hueco H₁ al borde del casco convexo
+    de pts_deg (lat/lon en grados). Usa proyección plana local.
+    """
+    from scipy.spatial import ConvexHull
+    if len(pts_deg) < 4 or len(centers) == 0:
+        return np.zeros(len(centers))
+    lat0     = pts_deg[:, 0].mean()
+    LAT_KM   = 111.0
+    LON_KM   = 111.0 * np.cos(np.radians(lat0))
+    pts_km   = np.column_stack([pts_deg[:, 0] * LAT_KM, pts_deg[:, 1] * LON_KM])
+    try:
+        hull     = ConvexHull(pts_km)
+        hverts   = pts_km[hull.vertices]
+        n        = len(hverts)
+        dists    = []
+        for lat, lon in centers:
+            p = np.array([lat * LAT_KM, lon * LON_KM])
+            d = min(_dist_pt_seg(p, hverts[i], hverts[(i + 1) % n]) for i in range(n))
+            dists.append(d)
+        return np.array(dists)
+    except Exception:
+        return np.zeros(len(centers))
+
+def _dist_pt_seg(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+    """Distancia mínima del punto p al segmento a–b (en coords locales km)."""
+    ab = b - a
+    t  = np.dot(p - a, ab) / (np.dot(ab, ab) + 1e-12)
+    return float(np.linalg.norm(p - (a + np.clip(t, 0, 1) * ab)))
+
+def _border_dists(centers: list, pts_deg: np.ndarray) -> np.ndarray:
+    """
+    Distancia (km) de cada centro de hueco H₁ al borde del casco convexo
+    de pts_deg. Permite detectar huecos que son artefactos del efecto de borde.
+    """
+    from scipy.spatial import ConvexHull
+    if len(pts_deg) < 4 or len(centers) == 0:
+        return np.zeros(len(centers))
+    lat0   = pts_deg[:, 0].mean()
+    LAT_KM = 111.0
+    LON_KM = 111.0 * np.cos(np.radians(lat0))
+    pts_km = np.column_stack([pts_deg[:, 0] * LAT_KM, pts_deg[:, 1] * LON_KM])
+    try:
+        hverts = pts_km[ConvexHull(pts_km).vertices]
+        n      = len(hverts)
+        return np.array([
+            min(_dist_pt_seg(
+                    np.array([lat * LAT_KM, lon * LON_KM]),
+                    hverts[i], hverts[(i + 1) % n]
+                ) for i in range(n))
+            for lat, lon in centers
+        ])
+    except Exception:
+        return np.zeros(len(centers))
+
+def _betti_curves(h0: np.ndarray, h1: np.ndarray, eps_range: np.ndarray):
+    """Números de Betti β₀ y β₁ para cada ε."""
+    d0 = np.where(np.isinf(h0[:, 1]), 1e9, h0[:, 1])
+    b0 = np.array([(d0 > e).sum() for e in eps_range], dtype=int)
+    if len(h1):
+        b1 = np.array([
+            int(((h1[:, 0] <= e) & ((h1[:, 1] > e) | np.isinf(h1[:, 1]))).sum())
+            for e in eps_range
+        ], dtype=int)
+    else:
+        b1 = np.zeros(len(eps_range), dtype=int)
+    return b0, b1
 
 # ── Carga de datos ─────────────────────────────────────────────────────────────
 @st.cache_data
@@ -122,7 +335,10 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
-tab_datos, = st.tabs(["📊 Datos"])
+tab_datos, tab_complejos, tab_persist, tab_prior, tab_report, tab_compare = st.tabs([
+    "Datos", "Complejos Simpliciales", "Persistencia Homológica",
+    "Priorización de Huecos", "Hallazgos", "Comparación TDA vs K-Means",
+])
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB DATOS
@@ -169,7 +385,7 @@ with tab_datos:
             labels={"municipio": "", "establecimientos": "Establecimientos"},
         )
         fig.update_layout(coloraxis_showscale=False, height=420, margin=dict(l=0, r=10, t=40, b=0))
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
     # 1b. Sector + Subsector
     with col_b:
@@ -185,7 +401,7 @@ with tab_datos:
             hole=0.45,
         )
         fig2.update_layout(height=420, margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig2, width="stretch")
+        st.plotly_chart(fig2, use_container_width=True)
 
     # Municipio público y privado por separado
     col_mun_pub, col_mun_priv = st.columns(2)
@@ -204,7 +420,7 @@ with tab_datos:
             labels={"municipio": "", "establecimientos": "Establecimientos"},
         )
         fig_mp.update_layout(coloraxis_showscale=False, height=420, margin=dict(l=0, r=10, t=40, b=0))
-        st.plotly_chart(fig_mp, width="stretch")
+        st.plotly_chart(fig_mp, use_container_width=True)
 
     with col_mun_priv:
         mun_priv = (
@@ -220,7 +436,7 @@ with tab_datos:
             labels={"municipio": "", "establecimientos": "Establecimientos"},
         )
         fig_mv.update_layout(coloraxis_showscale=False, height=420, margin=dict(l=0, r=10, t=40, b=0))
-        st.plotly_chart(fig_mv, width="stretch")
+        st.plotly_chart(fig_mv, use_container_width=True)
 
     col_c, col_d = st.columns(2)
 
@@ -239,7 +455,7 @@ with tab_datos:
         )
         fig3.update_layout(showlegend=False, height=320, margin=dict(l=0, r=0, t=40, b=60))
         fig3.update_xaxes(tickangle=-15)
-        st.plotly_chart(fig3, width="stretch")
+        st.plotly_chart(fig3, use_container_width=True)
 
     # 1d. Tamaño (personal ocupado)
     with col_d:
@@ -266,7 +482,7 @@ with tab_datos:
         )
         fig4.update_layout(coloraxis_showscale=False, height=320, margin=dict(l=0, r=0, t=40, b=60))
         fig4.update_xaxes(tickangle=-20)
-        st.plotly_chart(fig4, width="stretch")
+        st.plotly_chart(fig4, use_container_width=True)
 
     # Tamaño público y privado por separado
     col_tam_pub, col_tam_priv = st.columns(2)
@@ -285,7 +501,7 @@ with tab_datos:
         )
         fig_tp.update_layout(coloraxis_showscale=False, height=320, margin=dict(l=0, r=0, t=40, b=60))
         fig_tp.update_xaxes(tickangle=-20)
-        st.plotly_chart(fig_tp, width="stretch")
+        st.plotly_chart(fig_tp, use_container_width=True)
 
     with col_tam_priv:
         per_priv = (
@@ -301,7 +517,7 @@ with tab_datos:
         )
         fig_tv.update_layout(coloraxis_showscale=False, height=320, margin=dict(l=0, r=0, t=40, b=60))
         fig_tv.update_xaxes(tickangle=-20)
-        st.plotly_chart(fig_tv, width="stretch")
+        st.plotly_chart(fig_tv, use_container_width=True)
 
     # 1e. Desglose público vs privado
     st.markdown("**Desglose por sector: Público vs Privado**")
@@ -369,7 +585,7 @@ with tab_datos:
         mapbox_style="carto-positron",
         margin=dict(l=0, r=0, t=40, b=0),
     )
-    st.plotly_chart(fig_map1, width="stretch")
+    st.plotly_chart(fig_map1, use_container_width=True)
 
     st.divider()
 
@@ -398,7 +614,7 @@ with tab_datos:
             labels={"grado": "Grado de rezago", "ageb_count": "Número de AGEBs"},
         )
         fig5.update_layout(showlegend=False, height=360, margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig5, width="stretch")
+        st.plotly_chart(fig5, use_container_width=True)
 
     with col_f:
         fig6 = px.histogram(
@@ -410,7 +626,7 @@ with tab_datos:
             labels={"rezago_norm": "Rezago social normalizado (0–1)"},
         )
         fig6.update_layout(height=360, margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig6, width="stretch")
+        st.plotly_chart(fig6, use_container_width=True)
 
     # Mapa CONEVAL
     st.markdown("**Distribución espacial del rezago social por AGEB**")
@@ -432,7 +648,7 @@ with tab_datos:
         mapbox_style="carto-positron",
         margin=dict(l=0, r=0, t=40, b=0),
     )
-    st.plotly_chart(fig_map2, width="stretch")
+    st.plotly_chart(fig_map2, use_container_width=True)
 
     st.divider()
 
@@ -461,7 +677,7 @@ with tab_datos:
             labels={"grado": "Grado IDS", "ageb_count": "Número de AGEBs"},
         )
         fig7.update_layout(showlegend=False, height=360, margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig7, width="stretch")
+        st.plotly_chart(fig7, use_container_width=True)
 
     with col_h:
         fig8 = px.scatter(
@@ -480,7 +696,7 @@ with tab_datos:
             height=360,
         )
         fig8.update_layout(margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig8, width="stretch")
+        st.plotly_chart(fig8, use_container_width=True)
 
     # Distribución IDS
     fig9 = px.histogram(
@@ -496,7 +712,7 @@ with tab_datos:
         height=320,
     )
     fig9.update_layout(margin=dict(l=0, r=0, t=40, b=0))
-    st.plotly_chart(fig9, width="stretch")
+    st.plotly_chart(fig9, use_container_width=True)
 
     # Mapa IDS — centroides desde CONEVAL
     st.markdown("**Distribución espacial del IDS por AGEB**")
@@ -526,7 +742,7 @@ with tab_datos:
         mapbox_style="carto-positron",
         margin=dict(l=0, r=0, t=40, b=0),
     )
-    st.plotly_chart(fig_map_ids, width="stretch")
+    st.plotly_chart(fig_map_ids, use_container_width=True)
 
     st.divider()
 
@@ -552,7 +768,7 @@ with tab_datos:
             labels={"Municipio": ""},
         )
         fig10.update_layout(coloraxis_showscale=False, height=420, margin=dict(l=0, r=10, t=40, b=0))
-        st.plotly_chart(fig10, width="stretch")
+        st.plotly_chart(fig10, use_container_width=True)
 
     with col_j:
         # Derechohabiencia: columnas relevantes
@@ -579,7 +795,7 @@ with tab_datos:
             color_discrete_sequence=px.colors.qualitative.Bold,
         )
         fig11.update_layout(height=420, margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig11, width="stretch")
+        st.plotly_chart(fig11, use_container_width=True)
 
     # Sin derechohabiencia por municipio
     if "Sin derechohabiencia" in pob_mun.columns and "Población total" in pob_mun.columns:
@@ -598,7 +814,7 @@ with tab_datos:
             labels={"pct_sin_derecho": "% sin derechohabiencia", "Municipio": ""},
         )
         fig12.update_layout(coloraxis_showscale=False, height=380, margin=dict(l=0, r=10, t=40, b=0))
-        st.plotly_chart(fig12, width="stretch")
+        st.plotly_chart(fig12, use_container_width=True)
 
     st.divider()
 
@@ -632,22 +848,14 @@ with tab_datos:
         )
         fig13.update_layout(height=400, margin=dict(l=0, r=0, t=40, b=80))
         fig13.update_xaxes(tickangle=-35)
-        st.plotly_chart(fig13, width="stretch")
+        st.plotly_chart(fig13, use_container_width=True)
 
     # 5b. Rezago medio por municipio (proxy: AGEBs × rezago_norm)
     with col_l:
         # Estimar municipio a partir de cvegeo (dígitos 5-7 = cve_mun en CDMX)
         coneval_copy = coneval.copy()
         coneval_copy["cve_mun_str"] = coneval_copy["cvegeo"].astype(str).str[2:5]
-        mun_map = {
-            "002": "Azcapotzalco", "003": "Coyoacán", "004": "Cuajimalpa de Morelos",
-            "005": "Gustavo A. Madero", "006": "Iztacalco", "007": "Iztapalapa",
-            "008": "La Magdalena Contreras", "009": "Milpa Alta", "010": "Álvaro Obregón",
-            "011": "Tláhuac", "012": "Tlalpan", "013": "Xochimilco",
-            "014": "Benito Juárez", "015": "Cuauhtémoc", "016": "Miguel Hidalgo",
-            "017": "Venustiano Carranza",
-        }
-        coneval_copy["municipio"] = coneval_copy["cve_mun_str"].map(mun_map)
+        coneval_copy["municipio"] = coneval_copy["cve_mun_str"].map(MUN_MAP)
         rez_mun = (
             coneval_copy.groupby("municipio")["rezago_norm"]
             .mean()
@@ -667,7 +875,7 @@ with tab_datos:
             labels={"rezago_medio": "Rezago normalizado promedio", "municipio": ""},
         )
         fig14.update_layout(coloraxis_showscale=False, height=400, margin=dict(l=0, r=10, t=40, b=0))
-        st.plotly_chart(fig14, width="stretch")
+        st.plotly_chart(fig14, use_container_width=True)
 
     # 5c. Scatter integrado: unidades de salud pública vs rezago medio
     denue_pub_mun = (
@@ -698,9 +906,2022 @@ with tab_datos:
         )
         fig15.update_traces(textposition="top center", marker=dict(opacity=0.85))
         fig15.update_layout(coloraxis_showscale=False, margin=dict(l=0, r=0, t=50, b=0))
-        st.plotly_chart(fig15, width="stretch")
+        st.plotly_chart(fig15, use_container_width=True)
         st.caption(
             "Este gráfico resume la tensión central del proyecto: "
             "¿los municipios con mayor rezago tienen suficiente oferta pública de salud? "
             "Los huecos identificados con TDA (Čech/Vietoris-Rips) permitirán cuantificar esta brecha espacialmente."
+        )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB COMPLEJOS SIMPLICIALES
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_complejos:
+
+    st.header("Complejos de Vietoris-Rips y Homología Persistente")
+    st.caption(
+        "Red de salud **pública** de CDMX analizada con TDA. "
+        "Los círculos crecen (radio ε) y cuando se tocan forman una arista del complejo. "
+        "Los **huecos persistentes** en H₁ revelan zonas reales sin cobertura."
+    )
+
+    # ── Controles fila 1 ─────────────────────────────────────────────────────
+    cc1, cc2, cc3 = st.columns([2, 3, 2])
+    with cc1:
+        mun_list = ["CDMX completa"] + sorted(denue["municipio"].unique().tolist())
+        mun_sel = st.selectbox("Alcaldía", mun_list, key="mun_comp")
+    with cc2:
+        eps = st.slider(
+            "Radio ε (km) — radio de cada círculo",
+            min_value=0.25, max_value=8.0, value=1.5, step=0.25,
+        )
+    with cc3:
+        show_rezago_layer = st.toggle("Mostrar capa de rezago AGEBs", value=True)
+
+    # ── Controles fila 2 ─────────────────────────────────────────────────────
+    cc4, cc5 = st.columns([3, 2])
+    with cc4:
+        subsec_opts = ["Todos los subsectores"] + sorted(
+            denue[denue["sector"] == "Público"]["subsector"].dropna().unique().tolist()
+        )
+        subsec_sel = st.selectbox("Subsector a analizar", subsec_opts, key="subsec_comp")
+    with cc5:
+        max_pts = st.slider("Máximo de puntos", min_value=50, max_value=2500, value=600, step=50,
+                            help="Limita el número de unidades para el cómputo TDA")
+
+    # ── Filtrado unidades públicas ────────────────────────────────────────────
+    pub_all = denue[denue["sector"] == "Público"].dropna(subset=["latitud", "longitud"])
+    pub_f   = pub_all if mun_sel == "CDMX completa" else pub_all[pub_all["municipio"] == mun_sel]
+    if subsec_sel != "Todos los subsectores":
+        pub_f = pub_f[pub_f["subsector"] == subsec_sel]
+
+    n_universe = len(pub_f)
+    sampled = False
+    if n_universe > max_pts:
+        pub_f   = pub_f.sample(max_pts, random_state=42)
+        sampled = True
+
+    info_parts = []
+    if subsec_sel != "Todos los subsectores":
+        info_parts.append(f"Subsector: **{subsec_sel}**")
+    if sampled:
+        info_parts.append(f"muestra {max_pts} de {n_universe} unidades")
+    if info_parts:
+        st.caption(" " + " · ".join(info_parts))
+
+    pts   = pub_f[["latitud", "longitud"]].values
+    lats  = pts[:, 0].tolist()
+    lons  = pts[:, 1].tolist()
+
+    # ── Cómputo TDA (cacheado) ────────────────────────────────────────────────
+    with st.spinner("Calculando homología persistente…"):
+        pts_key       = tuple(map(tuple, pts))
+        dgms, D_list  = _compute_tda(pts_key)
+        D             = np.array(D_list)
+
+    h0, h1     = dgms[0], dgms[1]
+    max_finite = float(D.max()) if D.size > 0 else 15.0
+    max_finite = min(max_finite, 15.0)
+
+    # ── Cómputo cobertura AGEBs ───────────────────────────────────────────────
+    if mun_sel == "CDMX completa":
+        coneval_sel = coneval
+    else:
+        cve_codes = coneval["cvegeo"].astype(str).str[2:5]
+        coneval_sel = coneval[cve_codes == MUN_INV.get(mun_sel, "000")]
+
+    ageb_geo = coneval_sel.dropna(subset=["centroide_lat", "centroide_lon"])
+    ageb_pts = ageb_geo[["centroide_lat", "centroide_lon"]].values
+
+    if len(pts) > 0 and len(ageb_pts) > 0:
+        pub_key_cov  = tuple(map(tuple, pts))
+        ageb_key_cov = tuple(map(tuple, ageb_pts))
+        min_dists    = np.array(_compute_coverage(pub_key_cov, ageb_key_cov))
+    else:
+        min_dists = np.array([])
+
+    # ── KPIs ──────────────────────────────────────────────────────────────────
+    h0_deaths = np.where(np.isinf(h0[:, 1]), max_finite * 2, h0[:, 1])
+    n_comp    = int((h0_deaths > eps).sum())
+
+    if len(h1) > 0:
+        alive_h1 = (h1[:, 0] <= eps) & ((h1[:, 1] > eps) | np.isinf(h1[:, 1]))
+        n_holes  = int(alive_h1.sum())
+    else:
+        n_holes = 0
+
+    if min_dists.size > 0:
+        pct_cov    = float((min_dists <= eps).mean() * 100)
+        n_uncov    = int((min_dists > eps).sum())
+    else:
+        pct_cov, n_uncov = 0.0, 0
+
+    km1, km2, km3, km4 = st.columns(4)
+    km1.metric("Unidades públicas", f"{len(pub_f):,}", mun_sel)
+    km2.metric("Componentes conexas H₀", n_comp,  f"ε = {eps} km")
+    km3.metric("Huecos activos H₁",      n_holes, f"ε = {eps} km")
+    km4.metric("AGEBs con cobertura",    f"{pct_cov:.1f}%", f"{n_uncov} sin cobertura")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # A. Mapa interactivo VR
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("A · Mapa Interactivo — Complejo de Vietoris-Rips")
+    st.caption(
+        f"**Azul**: zona de cobertura (radio ε/2 = {eps/2:.2f} km). "
+        f"**Amarillo**: aristas del complejo (d ≤ {eps} km). "
+        f"**Puntos**: unidades de salud públicas por subsector."
+    )
+
+    fig_vr = go.Figure()
+
+    # Capa 0: centroides AGEB coloreados por rezago (fondo)
+    if show_rezago_layer and len(ageb_pts) > 0:
+        for grado, color in COLORS.items():
+            sub_ag = ageb_geo[ageb_geo["grado_rezago_social"] == grado]
+            if sub_ag.empty:
+                continue
+            fig_vr.add_trace(go.Scattermapbox(
+                lat=sub_ag["centroide_lat"].tolist(),
+                lon=sub_ag["centroide_lon"].tolist(),
+                mode="markers",
+                marker=dict(size=6, color=color, opacity=0.3),
+                name=f"Rezago {grado}",
+                hovertemplate=f"Rezago: {grado}<extra></extra>",
+                legendgroup="rezago",
+            ))
+
+    # Capa 1: círculos de cobertura (radio ε/2)
+    c_lats, c_lons = _circles(lats, lons, eps / 2)
+    fig_vr.add_trace(go.Scattermapbox(
+        lat=c_lats, lon=c_lons,
+        mode="lines",
+        line=dict(color="rgba(52,152,219,0.35)", width=1),
+        fill="toself",
+        fillcolor="rgba(52,152,219,0.07)",
+        name=f"Cobertura ε/2={eps/2:.2f} km",
+        hoverinfo="skip",
+        legendgroup="vr",
+    ))
+
+    # Capa 2: aristas VR
+    e_lats, e_lons = _edges(lats, lons, D, eps)
+    if e_lats:
+        fig_vr.add_trace(go.Scattermapbox(
+            lat=e_lats, lon=e_lons,
+            mode="lines",
+            line=dict(color="rgba(241,196,15,0.55)", width=1),
+            name="Aristas VR",
+            hoverinfo="skip",
+            legendgroup="vr",
+        ))
+
+    # Capa 3: unidades públicas por subsector
+    SUBSEC_COL = {
+        "Servicios ambulatorios": "#e74c3c",
+        "Asistencia social":      "#3498db",
+        "Hospitales":             "#f39c12",
+        "Residencias y cuidado":  "#9b59b6",
+    }
+    for subsec, sc in SUBSEC_COL.items():
+        sub_pts = pub_f[pub_f["subsector"] == subsec]
+        if sub_pts.empty:
+            continue
+        fig_vr.add_trace(go.Scattermapbox(
+            lat=sub_pts["latitud"].tolist(),
+            lon=sub_pts["longitud"].tolist(),
+            mode="markers",
+            marker=dict(size=7, color=sc),
+            name=subsec,
+            hovertemplate=(
+                "<b>%{customdata[0]}</b><br>"
+                "Municipio: %{customdata[1]}<br>"
+                "Personal: %{customdata[2]}<extra></extra>"
+            ),
+            customdata=sub_pts[["nom_estab", "municipio", "per_ocu"]].values.tolist(),
+            legendgroup="unidades",
+        ))
+
+    center_lat = float(np.mean(lats)) if lats else 19.43
+    center_lon = float(np.mean(lons)) if lons else -99.13
+    fig_vr.update_layout(
+        mapbox=dict(
+            style="carto-positron",
+            center=dict(lat=center_lat, lon=center_lon),
+            zoom=11 if mun_sel != "CDMX completa" else 10,
+        ),
+        height=560,
+        margin=dict(l=0, r=0, t=0, b=0),
+        legend=dict(bgcolor="rgba(255,255,255,0.85)", font=dict(size=11)),
+    )
+    st.plotly_chart(fig_vr, width="stretch")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # B. Homología Persistente
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("B · Homología Persistente")
+
+    col_bc1, col_bc2 = st.columns(2)
+
+    with col_bc1:
+        fig_h0 = _barcode_fig(h0, "H₀ – Componentes Conexas (barcode)", "#e74c3c", max_finite)
+        fig_h0.add_vline(x=eps, line_dash="dash", line_color="#333", opacity=0.7,
+                         annotation_text=f"ε actual", annotation_position="top right")
+        st.plotly_chart(fig_h0, width="stretch")
+        st.caption(
+            "Cada barra es un grupo de unidades que aún no se han conectado. "
+            "Al aumentar ε las barras mueren (grupos se fusionan). "
+            "Una barra muy larga = grupo aislado geográficamente."
+        )
+
+    with col_bc2:
+        fig_h1 = _barcode_fig(h1, "H₁ – Huecos / Loops (barcode)", "#3498db", max_finite)
+        fig_h1.add_vline(x=eps, line_dash="dash", line_color="#333", opacity=0.7,
+                         annotation_text=f"ε actual", annotation_position="top right")
+        st.plotly_chart(fig_h1, width="stretch")
+        st.caption(
+            "Cada barra es un hueco topológico (zona rodeada de unidades sin cobertura interior). "
+            "Una barra larga = hueco **real y persistente**. "
+            "Una barra corta = ruido o irregularidad local."
+        )
+
+    # Diagrama de persistencia
+    fig_pers = _persistence_fig(dgms, max_finite)
+    fig_pers.add_vline(x=eps, line_dash="dash", line_color="orange", opacity=0.5,
+                       annotation_text="ε", annotation_position="top right")
+    fig_pers.add_hline(y=eps, line_dash="dash", line_color="orange", opacity=0.5)
+    st.plotly_chart(fig_pers, width="stretch")
+    st.caption(
+        "Los puntos **alejados de la diagonal** son features topológicos significativos. "
+        "Rojo = H₀ (componentes), Azul = H₁ (huecos). "
+        "El tamaño del punto indica su persistencia."
+    )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # C. Cobertura y Rezago Social
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("C · Huecos de Cobertura y Rezago Social")
+    st.caption(
+        f"AGEBs cuyo centroide está a más de {eps} km de cualquier unidad pública "
+        f"de salud se consideran **sin cobertura** a este radio."
+    )
+
+    if min_dists.size > 0:
+        ageb_cov = ageb_geo.copy()
+        ageb_cov["dist_min"] = min_dists
+        ageb_cov["cobertura"] = np.where(min_dists <= eps, "Cubierta", "Sin cobertura")
+
+        col_cm, col_cr = st.columns(2)
+
+        # Mapa cobertura
+        with col_cm:
+            fig_cmap = go.Figure()
+            for status, sc, sz in [("Cubierta", "#2ecc71", 5), ("Sin cobertura", "#e74c3c", 8)]:
+                sub_c = ageb_cov[ageb_cov["cobertura"] == status]
+                fig_cmap.add_trace(go.Scattermapbox(
+                    lat=sub_c["centroide_lat"].tolist(),
+                    lon=sub_c["centroide_lon"].tolist(),
+                    mode="markers",
+                    marker=dict(size=sz, color=sc, opacity=0.8),
+                    name=status,
+                    hovertemplate=(
+                        f"{status}<br>"
+                        "Rezago: %{customdata[0]}<br>"
+                        "Dist. más cercana: %{customdata[1]:.2f} km<extra></extra>"
+                    ),
+                    customdata=sub_c[["grado_rezago_social", "dist_min"]].values.tolist(),
+                ))
+            fig_cmap.update_layout(
+                mapbox=dict(
+                    style="carto-positron",
+                    center=dict(lat=center_lat, lon=center_lon),
+                    zoom=11 if mun_sel != "CDMX completa" else 10,
+                ),
+                height=440,
+                margin=dict(l=0, r=0, t=0, b=0),
+                legend=dict(bgcolor="rgba(255,255,255,0.85)"),
+                title=f"AGEBs con/sin cobertura (ε = {eps} km)",
+            )
+            st.plotly_chart(fig_cmap, width="stretch")
+
+        # Rezago en cubiertas vs no cubiertas
+        with col_cr:
+            rez_order = ["Muy bajo", "Bajo", "Medio", "Alto", "Muy alto"]
+            rez_cov_df = (
+                ageb_cov.groupby(["cobertura", "grado_rezago_social"])
+                .size().reset_index(name="n_agebs")
+            )
+            rez_cov_df["grado_rezago_social"] = pd.Categorical(
+                rez_cov_df["grado_rezago_social"], categories=rez_order, ordered=True
+            )
+            fig_rcov = px.bar(
+                rez_cov_df.sort_values("grado_rezago_social"),
+                x="grado_rezago_social", y="n_agebs",
+                color="cobertura",
+                color_discrete_map={"Cubierta": "#2ecc71", "Sin cobertura": "#e74c3c"},
+                barmode="group",
+                title=f"Rezago de AGEBs: cubiertas vs sin cobertura (ε = {eps} km)",
+                labels={
+                    "grado_rezago_social": "Grado de rezago",
+                    "n_agebs": "Número de AGEBs",
+                    "cobertura": "",
+                },
+                height=440,
+            )
+            fig_rcov.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+            st.plotly_chart(fig_rcov, width="stretch")
+
+        # Resumen narrativo
+        sinc = ageb_cov[ageb_cov["cobertura"] == "Sin cobertura"]
+        if len(sinc) > 0:
+            top_rezago = sinc["grado_rezago_social"].value_counts().idxmax()
+            st.info(
+                f"A ε = **{eps} km**, hay **{n_uncov} AGEBs sin cobertura** "
+                f"({100 - pct_cov:.1f}% del total). "
+                f"El grado de rezago más frecuente entre ellas es **{top_rezago}**. "
+                f"Estos huecos de cobertura son los candidatos que el análisis TDA (H₁) "
+                f"detecta como vacíos estructurales persistentes en la red de salud pública."
+            )
+    else:
+        st.info("Selecciona una alcaldía con datos CONEVAL para ver el análisis de cobertura.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB PERSISTENCIA HOMOLÓGICA
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_persist:
+
+    st.header("Persistencia Homológica")
+    st.caption(
+        "Análisis detallado de las características topológicas persistentes de la red de salud pública. "
+        "Se identifican componentes conexas (H₀), huecos (H₁) y su relación con la cobertura y el rezago social."
+    )
+
+    # ── Controles ─────────────────────────────────────────────────────────────
+    pa, pb, pc = st.columns([2, 2, 2])
+    with pa:
+        mun_list_p = ["CDMX completa"] + sorted(denue["municipio"].unique().tolist())
+        mun_p = st.selectbox("Alcaldía", mun_list_p, key="mun_persist")
+    with pb:
+        subsec_opts_p = ["Todos los subsectores"] + sorted(
+            denue[denue["sector"] == "Público"]["subsector"].dropna().unique().tolist()
+        )
+        subsec_p = st.selectbox("Subsector", subsec_opts_p, key="subsec_persist")
+    with pc:
+        max_pts_p = st.slider("Máx. puntos", 50, 2500, 600, 50, key="maxpts_persist")
+
+    pd1, pd2 = st.columns([3, 2])
+    with pd1:
+        thresh = st.slider(
+            "Umbral de persistencia significativa (km)",
+            min_value=0.1, max_value=3.0, value=0.5, step=0.1,
+            help="Features con persistencia ≥ umbral se consideran huecos reales (no ruido)",
+        )
+    with pd2:
+        eps_p = st.slider("ε de referencia (km)", 0.25, 8.0, 1.5, 0.25, key="eps_persist")
+
+    # ── Filtrado ──────────────────────────────────────────────────────────────
+    pub_p = denue[denue["sector"] == "Público"].dropna(subset=["latitud", "longitud"])
+    if mun_p != "CDMX completa":
+        pub_p = pub_p[pub_p["municipio"] == mun_p]
+    if subsec_p != "Todos los subsectores":
+        pub_p = pub_p[pub_p["subsector"] == subsec_p]
+    n_univ_p = len(pub_p)
+    if n_univ_p > max_pts_p:
+        pub_p = pub_p.sample(max_pts_p, random_state=42)
+        st.caption(f"⚠️ Muestra de {max_pts_p} de {n_univ_p} unidades.")
+
+    pts_p  = pub_p[["latitud", "longitud"]].values
+    lats_p = pts_p[:, 0]
+    lons_p = pts_p[:, 1]
+
+    if len(pts_p) < 5:
+        st.warning("Muy pocas unidades para el análisis. Amplía el filtro.")
+        st.stop()
+
+    # ── Cómputo TDA completo ─────────────────────────────────────────────────
+    with st.spinner("Calculando persistencia…"):
+        pts_p_key = tuple(map(tuple, pts_p))
+        dgms_raw, D_p_list, h1_centers = _compute_tda_full(pts_p_key)
+        D_p = np.array(D_p_list)
+
+    h0_p = np.array(dgms_raw[0])
+    h1_p = np.array(dgms_raw[1]) if len(dgms_raw[1]) else np.empty((0, 2))
+    max_ep = min(float(D_p.max()) if D_p.size else 15.0, 15.0)
+
+    h1_pers = (h1_p[:, 1] - h1_p[:, 0]) if len(h1_p) else np.array([])
+    h1_sig  = h1_p[h1_pers >= thresh] if len(h1_p) else np.empty((0, 2))
+    n_sig   = len(h1_sig)
+
+    # ── KPIs ──────────────────────────────────────────────────────────────────
+    kp1, kp2, kp3, kp4 = st.columns(4)
+    kp1.metric("Unidades analizadas", f"{len(pts_p):,}")
+    kp2.metric("Features H₁ totales", len(h1_p))
+    kp3.metric(f"Huecos significativos (≥{thresh} km)", n_sig)
+    if len(h1_pers):
+        kp4.metric("Persistencia H₁ máxima", f"{h1_pers.max():.2f} km")
+    else:
+        kp4.metric("Persistencia H₁ máxima", "—")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # A. DIAGRAMA DE PERSISTENCIA (avanzado)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("A · Diagrama de Persistencia")
+
+    rows_pers = []
+    for b, d in h0_p:
+        d_p = min(float(d), max_ep * 1.05) if np.isinf(d) else float(d)
+        rows_pers.append({"Dim": "H₀ Componentes", "Nacimiento": float(b),
+                          "Muerte": d_p, "Persistencia": d_p - float(b)})
+    for b, d in h1_p:
+        d_p = min(float(d), max_ep * 1.05) if np.isinf(d) else float(d)
+        pers = d_p - float(b)
+        rows_pers.append({"Dim": "H₁ Huecos", "Nacimiento": float(b),
+                          "Muerte": d_p, "Persistencia": pers,
+                          "Significativo": "Sí" if pers >= thresh else "No"})
+
+    df_pers = pd.DataFrame(rows_pers)
+    fig_pd = px.scatter(
+        df_pers, x="Nacimiento", y="Muerte", color="Dim",
+        color_discrete_map={"H₀ Componentes": "#e74c3c", "H₁ Huecos": "#3498db"},
+        size="Persistencia", size_max=18, opacity=0.75,
+        hover_data={"Persistencia": ":.3f"},
+        title="Diagrama de Persistencia — H₀ y H₁",
+        labels={"Nacimiento": "Nacimiento ε (km)", "Muerte": "Muerte ε (km)"},
+        height=450,
+    )
+    lim = max_ep * 1.05
+    # Diagonal (persistencia = 0, ruido)
+    fig_pd.add_shape(type="line", x0=0, y0=0, x1=lim, y1=lim,
+                     line=dict(color="gray", dash="dot", width=1))
+    # Umbral de significancia (persistencia = thresh)
+    fig_pd.add_shape(type="line", x0=0, y0=thresh, x1=lim - thresh, y1=lim,
+                     line=dict(color="#f39c12", dash="dash", width=1.5))
+    # Línea ε referencia
+    fig_pd.add_vline(x=eps_p, line_dash="dash", line_color="green", opacity=0.6,
+                     annotation_text=f"ε={eps_p}km", annotation_position="top right")
+    # Anotaciones de zonas
+    fig_pd.add_annotation(x=lim * 0.08, y=lim * 0.97,
+                          text="◀ Ruido (baja persistencia)", showarrow=False,
+                          font=dict(color="gray", size=11))
+    fig_pd.add_annotation(x=lim * 0.15, y=lim * 0.6,
+                          text="Huecos<br>significativos ▶", showarrow=False,
+                          font=dict(color="#f39c12", size=11))
+    fig_pd.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+    st.plotly_chart(fig_pd, width="stretch")
+    st.caption(
+        "**Diagonal punteada gris** = persistencia cero (ruido). "
+        "**Línea naranja** = umbral de significancia. "
+        "Los puntos azules (H₁) alejados de la diagonal son **huecos topológicos reales**."
+    )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # B. CURVAS DE BETTI
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("B · Curvas de Números de Betti")
+    st.caption(
+        "β₀(ε) = componentes conexas activas. β₁(ε) = huecos activos. "
+        "El pico de β₁ indica el radio donde existe la mayor cantidad de huecos simultáneamente."
+    )
+
+    eps_range = np.linspace(0, max_ep, 250)
+    b0_curve, b1_curve = _betti_curves(h0_p, h1_p, eps_range)
+
+    df_betti = pd.DataFrame({
+        "ε (km)": np.concatenate([eps_range, eps_range]),
+        "Número de Betti": np.concatenate([b0_curve, b1_curve]),
+        "Dimensión": ["β₀ – Componentes"] * len(eps_range) + ["β₁ – Huecos"] * len(eps_range),
+    })
+    fig_betti = px.line(
+        df_betti, x="ε (km)", y="Número de Betti", color="Dimensión",
+        color_discrete_map={"β₀ – Componentes": "#e74c3c", "β₁ – Huecos": "#3498db"},
+        title="Evolución de los Números de Betti con ε",
+        height=380,
+    )
+    # Línea ε referencia
+    fig_betti.add_vline(x=eps_p, line_dash="dash", line_color="green", opacity=0.6,
+                        annotation_text=f"ε={eps_p}", annotation_position="top right")
+    # Marcar pico de β₁
+    if b1_curve.max() > 0:
+        peak_idx = int(b1_curve.argmax())
+        peak_eps = float(eps_range[peak_idx])
+        peak_val = int(b1_curve[peak_idx])
+        fig_betti.add_annotation(
+            x=peak_eps, y=peak_val,
+            text=f"Pico β₁={peak_val}<br>ε={peak_eps:.2f}km",
+            showarrow=True, arrowhead=2,
+            font=dict(color="#3498db", size=11),
+            bgcolor="rgba(255,255,255,0.8)",
+        )
+    fig_betti.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+    st.plotly_chart(fig_betti, width="stretch")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # C. ANÁLISIS DE FEATURES PERSISTENTES
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("C · Análisis de Features Persistentes")
+
+    col_hist, col_tab = st.columns([3, 2])
+
+    with col_hist:
+        # Histograma de persistencia
+        rows_hist = []
+        for b, d in h0_p:
+            p = (min(float(d), max_ep) if np.isinf(d) else float(d)) - float(b)
+            rows_hist.append({"Persistencia (km)": p, "Dimensión": "H₀ Componentes"})
+        for b, d in h1_p:
+            p = (min(float(d), max_ep) if np.isinf(d) else float(d)) - float(b)
+            rows_hist.append({"Persistencia (km)": p, "Dimensión": "H₁ Huecos"})
+        df_hist = pd.DataFrame(rows_hist)
+
+        fig_hist = px.histogram(
+            df_hist, x="Persistencia (km)", color="Dimensión",
+            color_discrete_map={"H₀ Componentes": "#e74c3c", "H₁ Huecos": "#3498db"},
+            barmode="overlay", opacity=0.7, nbins=40,
+            title="Distribución de Persistencia — H₀ y H₁",
+            height=360,
+        )
+        fig_hist.add_vline(x=thresh, line_dash="dash", line_color="#f39c12",
+                           annotation_text=f"Umbral {thresh} km",
+                           annotation_position="top right")
+        fig_hist.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+        st.plotly_chart(fig_hist, width="stretch")
+        st.caption(
+            "Las barras a la **izquierda del umbral** son ruido topológico. "
+            "Las barras a la **derecha** representan estructuras reales (huecos, clusters aislados)."
+        )
+
+    with col_tab:
+        st.markdown("**Top huecos H₁ por persistencia**")
+        if len(h1_p):
+            # Distancias al borde del casco convexo
+            bd = _border_dists(h1_centers[:len(h1_p)], pts_p)
+            df_h1_tab = pd.DataFrame({
+                "Nacimiento (km)":   h1_p[:, 0].round(3),
+                "Muerte (km)":       np.where(np.isinf(h1_p[:, 1]), np.inf, h1_p[:, 1]).round(3),
+                "Persistencia (km)": h1_pers.round(3),
+                "Dist. borde (km)":  bd.round(2),
+            }).sort_values("Persistencia (km)", ascending=False).head(15).reset_index(drop=True)
+            df_h1_tab.index += 1
+            df_h1_tab["Tipo"] = df_h1_tab.apply(
+                lambda r: ("✓ Interior" if r["Dist. borde (km)"] >= eps_p else "⚠️ Borde")
+                          if r["Persistencia (km)"] >= thresh else "",
+                axis=1,
+            )
+            st.dataframe(df_h1_tab, use_container_width=True, height=340)
+            st.caption("⚠️ Borde = hueco cerca del límite del área analizada; puede ser artefacto por efecto de frontera.")
+        else:
+            st.info("Sin features H₁ en la selección actual.")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # D. MAPA DE HUECOS DE COBERTURA
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("D · Mapa de Huecos de Cobertura")
+    st.caption(
+        "Grilla de distancia al punto público más cercano. "
+        "**Naranja ✕** = hueco H₁ significativo interior (real). "
+        "**Gris ✕** = posible artefacto de borde (frontera del área analizada)."
+    )
+
+    pad = 0.04
+    g_lats, g_lons, g_dists = _compute_grid_coverage(
+        pts_p_key,
+        float(lats_p.min()) - pad, float(lats_p.max()) + pad,
+        float(lons_p.min()) - pad, float(lons_p.max()) + pad,
+    )
+    df_grid = pd.DataFrame({"lat": g_lats, "lon": g_lons, "dist_km": g_dists})
+
+    fig_hm = go.Figure()
+
+    # Capa grilla de cobertura
+    fig_hm.add_trace(go.Scattermapbox(
+        lat=df_grid["lat"].tolist(),
+        lon=df_grid["lon"].tolist(),
+        mode="markers",
+        marker=dict(
+            size=9,
+            color=df_grid["dist_km"].tolist(),
+            colorscale="RdYlGn_r",
+            cmin=0,
+            cmax=float(np.percentile(g_dists, 95)),
+            colorbar=dict(title="km", thickness=12, len=0.6),
+            opacity=0.75,
+        ),
+        name="Distancia cobertura",
+        hovertemplate="Dist. más cercana: %{marker.color:.2f} km<extra></extra>",
+    ))
+
+    # Unidades públicas
+    fig_hm.add_trace(go.Scattermapbox(
+        lat=lats_p.tolist(), lon=lons_p.tolist(),
+        mode="markers",
+        marker=dict(size=5, color="#3498db", opacity=0.7),
+        name="Unidades públicas",
+        hoverinfo="skip",
+    ))
+
+    # Centros de huecos H₁ significativos — separados por tipo (interior / borde)
+    if n_sig > 0 and len(h1_centers) >= len(h1_p):
+        bd_p   = _border_dists(h1_centers[:len(h1_p)], pts_p)
+        sig_idx = np.where(h1_pers >= thresh)[0]
+        interior_c = [h1_centers[i] for i in sig_idx if i < len(h1_centers) and bd_p[i] >= eps_p]
+        borde_c    = [h1_centers[i] for i in sig_idx if i < len(h1_centers) and bd_p[i] <  eps_p]
+        if interior_c:
+            fig_hm.add_trace(go.Scattermapbox(
+                lat=[c[0] for c in interior_c],
+                lon=[c[1] for c in interior_c],
+                mode="markers+text",
+                marker=dict(size=14, color="#f39c12", opacity=0.95),
+                text=["✕"] * len(interior_c),
+                textfont=dict(size=13, color="white"),
+                name=f"Hueco interior (≥{thresh}km)",
+                hovertemplate="Hueco interior significativo<extra></extra>",
+            ))
+        if borde_c:
+            fig_hm.add_trace(go.Scattermapbox(
+                lat=[c[0] for c in borde_c],
+                lon=[c[1] for c in borde_c],
+                mode="markers+text",
+                marker=dict(size=14, color="#95a5a6", opacity=0.8),
+                text=["✕"] * len(borde_c),
+                textfont=dict(size=12, color="white"),
+                name="Posible artefacto de borde",
+                hovertemplate="Posible artefacto de borde<extra></extra>",
+            ))
+
+    fig_hm.update_layout(
+        mapbox=dict(
+            style="carto-positron",
+            center=dict(lat=float(lats_p.mean()), lon=float(lons_p.mean())),
+            zoom=11 if mun_p != "CDMX completa" else 10,
+        ),
+        height=520,
+        margin=dict(l=0, r=0, t=0, b=0),
+        legend=dict(bgcolor="rgba(255,255,255,0.85)", font=dict(size=11)),
+    )
+    st.plotly_chart(fig_hm, width="stretch")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # E. INTERPRETACIÓN
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("E · Interpretación: Conectividad, Cobertura e Implicaciones")
+
+    # Rezago en zonas sin cobertura
+    if mun_p == "CDMX completa":
+        coneval_p = coneval
+    else:
+        cve_p = coneval["cvegeo"].astype(str).str[2:5]
+        coneval_p = coneval[cve_p == MUN_INV.get(mun_p, "000")]
+
+    ageb_p = coneval_p.dropna(subset=["centroide_lat", "centroide_lon"])
+    ageb_pts_p = ageb_p[["centroide_lat", "centroide_lon"]].values
+
+    if len(ageb_pts_p) > 0 and len(pts_p) > 0:
+        md_p = np.array(_compute_coverage(pts_p_key, tuple(map(tuple, ageb_pts_p))))
+        ageb_p = ageb_p.copy()
+        ageb_p["dist_min"] = md_p
+        ageb_p["cobertura"] = np.where(md_p <= eps_p, "Cubierta", "Sin cobertura")
+        pct_p = float((md_p <= eps_p).mean() * 100)
+        n_unc_p = int((md_p > eps_p).sum())
+
+        col_int1, col_int2 = st.columns(2)
+
+        with col_int1:
+            # Rezago: cubierta vs sin cobertura
+            rez_ord = ["Muy bajo", "Bajo", "Medio", "Alto", "Muy alto"]
+            df_int = (
+                ageb_p.groupby(["cobertura", "grado_rezago_social"])
+                .size().reset_index(name="n")
+            )
+            df_int["grado_rezago_social"] = pd.Categorical(
+                df_int["grado_rezago_social"], categories=rez_ord, ordered=True
+            )
+            # Normalizar a porcentaje dentro de cada grupo
+            totals = df_int.groupby("cobertura")["n"].transform("sum")
+            df_int["pct"] = (df_int["n"] / totals * 100).round(1)
+            fig_int = px.bar(
+                df_int.sort_values("grado_rezago_social"),
+                x="grado_rezago_social", y="pct", color="cobertura",
+                color_discrete_map={"Cubierta": "#2ecc71", "Sin cobertura": "#e74c3c"},
+                barmode="group",
+                title=f"Rezago social: % dentro de AGEBs cubiertas vs sin cobertura (ε={eps_p}km)",
+                labels={"grado_rezago_social": "Rezago", "pct": "% de AGEBs en grupo", "cobertura": ""},
+                height=380,
+            )
+            fig_int.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+            st.plotly_chart(fig_int, width="stretch")
+
+        with col_int2:
+            # Distancia media al servicio por grado de rezago
+            df_dist_rez = ageb_p.groupby("grado_rezago_social")["dist_min"].mean().reset_index()
+            df_dist_rez.columns = ["Rezago", "Distancia media (km)"]
+            df_dist_rez["Rezago"] = pd.Categorical(
+                df_dist_rez["Rezago"], categories=rez_ord, ordered=True
+            )
+            df_dist_rez = df_dist_rez.sort_values("Rezago")
+            fig_dist = px.bar(
+                df_dist_rez, x="Rezago", y="Distancia media (km)",
+                color="Rezago", color_discrete_map=COLORS,
+                title="Distancia media a unidad pública por grado de rezago",
+                labels={"Rezago": "", "Distancia media (km)": "km promedio"},
+                height=380,
+            )
+            fig_dist.update_layout(showlegend=False, margin=dict(l=0, r=0, t=40, b=0))
+            fig_dist.add_hline(y=eps_p, line_dash="dash", line_color="gray",
+                               annotation_text=f"ε={eps_p}km", annotation_position="right")
+            st.plotly_chart(fig_dist, width="stretch")
+
+        # Resumen narrativo dinámico
+        sinc_p  = ageb_p[ageb_p["cobertura"] == "Sin cobertura"]
+        top_r_p = sinc_p["grado_rezago_social"].value_counts().idxmax() if len(sinc_p) else "—"
+        max_dist_rez = df_dist_rez.loc[df_dist_rez["Distancia media (km)"].idxmax(), "Rezago"] if len(df_dist_rez) else "—"
+
+        if b1_curve.max() > 0:
+            peak_eps_val = float(eps_range[b1_curve.argmax()])
+        else:
+            peak_eps_val = 0.0
+
+        st.info(
+            f"**Resumen de hallazgos topológicos y sociales**\n\n"
+            f"- La red de salud pública analizda presenta **{n_sig} huecos H₁ persistentes** "
+            f"(persistencia ≥ {thresh} km), que representan zonas sin cobertura estructuralmente relevantes.\n"
+            f"- El número máximo de huecos simultáneos (β₁) ocurre a **ε ≈ {peak_eps_val:.2f} km**, "
+            f"indicando que ese es el radio crítico de análisis.\n"
+            f"- A ε = {eps_p} km, el **{pct_p:.1f}%** de las AGEBs tienen cobertura; "
+            f"quedan **{n_unc_p} AGEBs sin cobertura**.\n"
+            f"- El grado de rezago más frecuente en AGEBs sin cobertura es **{top_r_p}**, "
+            f"y el rezago con mayor distancia media al servicio es **{max_dist_rez}**.\n"
+            f"- Esto sugiere que los huecos topológicos detectados no son aleatorios: "
+            f"se concentran en zonas de mayor vulnerabilidad social."
+        )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB PRIORIZACIÓN DE HUECOS
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_prior:
+
+    st.header("Priorización de Huecos H₁")
+    st.caption(
+        "Cada hueco topológico detectado se pondera combinando su persistencia matemática "
+        "con variables territoriales de vulnerabilidad social, para pasar de un análisis "
+        "puramente topológico a una lectura de política pública."
+    )
+
+    # ── Controles ─────────────────────────────────────────────────────────────
+    pr1, pr2, pr3, pr4 = st.columns([2, 2, 1, 1])
+    with pr1:
+        mun_pr = st.selectbox(
+            "Alcaldía",
+            ["CDMX completa"] + sorted(denue["municipio"].unique().tolist()),
+            key="mun_pr",
+        )
+    with pr2:
+        subsec_opts_pr = ["Todos los subsectores"] + sorted(
+            denue[denue["sector"] == "Público"]["subsector"].dropna().unique().tolist()
+        )
+        subsec_pr = st.selectbox("Subsector público", subsec_opts_pr, key="subsec_pr")
+    with pr3:
+        eps_pr    = st.slider("Radio ε (km)", 0.25, 8.0, 1.5, 0.25, key="eps_pr")
+    with pr4:
+        thresh_pr = st.slider("Umbral persist. (km)", 0.1, 3.0, 0.5, 0.1, key="thresh_pr")
+
+    # ── Preparar datos ─────────────────────────────────────────────────────────
+    # 1. Unidades públicas
+    pub_pr = denue[denue["sector"] == "Público"].dropna(subset=["latitud", "longitud"])
+    if mun_pr != "CDMX completa":
+        pub_pr = pub_pr[pub_pr["municipio"] == mun_pr]
+    if subsec_pr != "Todos los subsectores":
+        pub_pr = pub_pr[pub_pr["subsector"] == subsec_pr]
+
+    # 2. AGEB lookup: CONEVAL + IDS
+    ageb_pr = coneval.merge(
+        ids[["cvegeo", "bajo_desarrollo_norm", "prop_nbi_norm",
+             "grado_ids", "grado_ids_num", "poblacion_ids"]],
+        on="cvegeo", how="left",
+    )
+    _dens_raw = ageb_pr["poblacion_ids"] / ageb_pr["area_km2"].replace(0, np.nan)
+    _d99      = _dens_raw.quantile(0.99)
+    ageb_pr   = ageb_pr.copy()
+    ageb_pr["densidad_norm"] = (_dens_raw.clip(upper=_d99) / _d99).fillna(0)
+
+    if mun_pr != "CDMX completa":
+        _cve_pr = ageb_pr["cvegeo"].astype(str).str[2:5]
+        ageb_pr = ageb_pr[_cve_pr == MUN_INV.get(mun_pr, "000")]
+    ageb_pr = ageb_pr.dropna(subset=["centroide_lat", "centroide_lon"]).reset_index(drop=True)
+
+    # 3. TDA
+    _pts_pr = pub_pr[["latitud", "longitud"]].values
+    if len(_pts_pr) > 2500:
+        _pts_pr = pub_pr.sample(2500, random_state=42)[["latitud", "longitud"]].values
+
+    if len(_pts_pr) < 5:
+        st.warning("No hay suficientes unidades públicas con este filtro (mínimo 5).")
+        st.stop()
+
+    with st.spinner("Calculando TDA…"):
+        _pts_pr_key         = tuple(map(tuple, _pts_pr))
+        _dgms_pr, _, _h1c_pr = _compute_tda_full(_pts_pr_key)
+        _h1_pr  = np.array(_dgms_pr[1]) if len(_dgms_pr[1]) else np.empty((0, 2))
+
+    if len(_h1_pr) == 0:
+        st.info("No se detectaron huecos H₁ con estos parámetros.")
+        st.stop()
+
+    _h1p_pr      = _h1_pr[:, 1] - _h1_pr[:, 0]
+    _max_pers_pr = float(_h1p_pr.max()) or 1.0
+    _h1p_norm    = _h1p_pr / _max_pers_pr
+
+    _h1c_arr  = np.array(_h1c_pr[:len(_h1_pr)]) if len(_h1c_pr) else np.empty((0, 2))
+    _bd_pr    = _border_dists(_h1c_arr, _pts_pr) if len(_h1c_arr) else np.array([])
+    _int_mask = (
+        (_h1p_pr >= thresh_pr) & (_bd_pr >= eps_pr)
+        if len(_bd_pr) else (_h1p_pr >= thresh_pr)
+    )
+
+    _sig_idx = np.where(_h1p_pr >= thresh_pr)[0]
+    if len(_sig_idx) == 0:
+        st.info(f"No hay huecos con persistencia ≥ {thresh_pr} km. Baja el umbral.")
+        st.stop()
+
+    # 4. Construir tabla de huecos con índice de importancia
+    _ageb_coords = ageb_pr[["centroide_lat", "centroide_lon"]].values if len(ageb_pr) else np.empty((0, 2))
+
+    _holes = []
+    for _idx in _sig_idx:
+        _center     = _h1c_arr[_idx] if _idx < len(_h1c_arr) else None
+        _is_int     = bool(_int_mask[_idx]) if _idx < len(_int_mask) else False
+        _social     = {}
+        _dist_ageb  = np.nan
+        _ageb_label = "—"
+
+        if _center is not None and len(_ageb_coords) > 0:
+            _D_ha     = _dist_cross_km(np.array([_center]), _ageb_coords)[0]
+            _near_idx = int(_D_ha.argmin())
+            _dist_ageb = float(_D_ha[_near_idx])
+            _row       = ageb_pr.iloc[_near_idx]
+            _ageb_label = str(_row.get("cvegeo", "—"))
+            _social = {
+                "rezago_norm":        float(_row.get("rezago_norm", 0) or 0),
+                "bajo_desarrollo_norm": float(_row.get("bajo_desarrollo_norm", 0) or 0),
+                "prop_nbi_norm":      float(_row.get("prop_nbi_norm", 0) or 0),
+                "densidad_norm":      float(_row.get("densidad_norm", 0) or 0),
+                "grado_rezago":       str(_row.get("grado_rezago_social", "—")),
+                "grado_ids":          str(_row.get("grado_ids", "—")),
+            }
+
+        P_i = float(_h1p_norm[_idx])
+        D_i = _social.get("densidad_norm", 0.0)
+        R_i = _social.get("rezago_norm", 0.0)
+        B_i = _social.get("bajo_desarrollo_norm", 0.0)
+        N_i = _social.get("prop_nbi_norm", 0.0)
+        I_i = 0.40 * P_i + 0.15 * D_i + 0.10 * R_i + 0.25 * B_i + 0.10 * N_i
+
+        _ctx = "Completo" if (not np.isnan(_dist_ageb) and _dist_ageb < eps_pr) \
+               else "Aproximado" if not np.isnan(_dist_ageb) else "Sin datos"
+
+        _holes.append({
+            "lat": float(_center[0]) if _center is not None else np.nan,
+            "lon": float(_center[1]) if _center is not None else np.nan,
+            "birth":       float(_h1_pr[_idx, 0]),
+            "death":       float(_h1_pr[_idx, 1]) if not np.isinf(_h1_pr[_idx, 1]) else _max_pers_pr,
+            "persistence": float(_h1p_pr[_idx]),
+            "P_i": P_i, "D_i": D_i, "R_i": R_i, "B_i": B_i, "N_i": N_i,
+            "indice":      round(I_i, 4),
+            "interior":    _is_int,
+            "tipo":        "Interior" if _is_int else "Artefacto de borde",
+            "dist_ageb_km": round(_dist_ageb, 3) if not np.isnan(_dist_ageb) else np.nan,
+            "contexto":    _ctx,
+            "grado_rezago": _social.get("grado_rezago", "—"),
+            "grado_ids":    _social.get("grado_ids", "—"),
+            "ageb_cvegeo":  _ageb_label,
+        })
+
+    df_holes = (
+        pd.DataFrame(_holes)
+        .sort_values("indice", ascending=False)
+        .reset_index(drop=True)
+    )
+    df_holes["label"]  = [f"H{i+1:03d}" for i in range(len(df_holes))]
+    df_holes["w_P"]    = (df_holes["P_i"] * 0.40).round(4)
+    df_holes["w_D"]    = (df_holes["D_i"] * 0.15).round(4)
+    df_holes["w_R"]    = (df_holes["R_i"] * 0.10).round(4)
+    df_holes["w_B"]    = (df_holes["B_i"] * 0.25).round(4)
+    df_holes["w_N"]    = (df_holes["N_i"] * 0.10).round(4)
+
+    # ── Métricas resumen ───────────────────────────────────────────────────────
+    _pm1, _pm2, _pm3, _pm4 = st.columns(4)
+    _pm1.metric("Huecos significativos", len(df_holes))
+    _pm2.metric("Interiores confirmados", int(df_holes["interior"].sum()))
+    _pm3.metric("Índice máximo", f"{df_holes['indice'].max():.3f}")
+    _pm4.metric("Persistencia máxima", f"{df_holes['persistence'].max():.2f} km")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # A. MAPA
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("A · Mapa de Huecos Priorizados")
+
+    _df_map = df_holes.dropna(subset=["lat", "lon"]).copy()
+    if len(_df_map) > 0:
+        _idx_range = _df_map["indice"].max() - _df_map["indice"].min()
+        _df_map["marker_size"] = 12 + 28 * (
+            (_df_map["indice"] - _df_map["indice"].min()) / (_idx_range + 1e-10)
+        )
+
+        # Cuartiles de importancia
+        _n_q = min(4, len(_df_map["indice"].unique()))
+        if _n_q > 1:
+            _df_map["cuartil"] = pd.qcut(
+                _df_map["indice"], q=_n_q,
+                labels=[f"Q{i+1}" for i in range(_n_q)],
+                duplicates="drop",
+            ).astype(str)
+        else:
+            _df_map["cuartil"] = "Q1"
+        _q_colors = {"Q1": "#74b9ff", "Q2": "#fdcb6e", "Q3": "#e17055", "Q4": "#d63031"}
+
+        fig_map_pr = px.scatter_map(
+            _df_map,
+            lat="lat", lon="lon",
+            color="cuartil",
+            color_discrete_map=_q_colors,
+            size="marker_size",
+            size_max=40,
+            hover_name="label",
+            hover_data={
+                "persistence": ":.3f", "indice": ":.3f",
+                "grado_rezago": True, "grado_ids": True,
+                "tipo": True, "marker_size": False, "cuartil": False,
+            },
+            zoom=10, height=520,
+            title="Huecos H₁ priorizados (tamaño proporcional al índice de importancia)",
+        )
+        # Añadir etiquetas de texto
+        fig_map_pr.add_trace(go.Scattermap(
+            lat=_df_map["lat"].tolist(),
+            lon=_df_map["lon"].tolist(),
+            mode="text",
+            text=_df_map["label"].tolist(),
+            textfont=dict(size=9, color="#2d3436"),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+        fig_map_pr.update_layout(
+            map_style="carto-positron",
+            margin=dict(t=40, b=0, l=0, r=0),
+            legend_title_text="Cuartil de importancia",
+        )
+        st.plotly_chart(fig_map_pr, width="stretch")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # B. DESCOMPOSICIÓN DEL ÍNDICE
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("B · Descomposición del Índice de Importancia")
+    st.caption(
+        "Cada barra muestra la contribución ponderada de cada componente al índice total. "
+        "I(H) = 0.40·P + 0.25·B + 0.15·D + 0.10·R + 0.10·N"
+    )
+
+    _comp_defs = [
+        ("w_P", "Persistencia topológica (×0.40)", "#2d3436"),
+        ("w_B", "Bajo desarrollo IDS (×0.25)",      "#d63031"),
+        ("w_D", "Densidad poblacional (×0.15)",      "#6c5ce7"),
+        ("w_R", "Rezago social CONEVAL (×0.10)",     "#e17055"),
+        ("w_N", "Necesidades básicas NBI (×0.10)",   "#fdcb6e"),
+    ]
+
+    _fig_decomp = go.Figure()
+    for _col, _lbl, _col_hex in _comp_defs:
+        _fig_decomp.add_bar(
+            y=df_holes["label"],
+            x=df_holes[_col],
+            name=_lbl,
+            orientation="h",
+            marker_color=_col_hex,
+        )
+    _fig_decomp.update_layout(
+        barmode="stack",
+        xaxis_title="Contribución al índice (suma = I(H))",
+        height=max(320, len(df_holes) * 30 + 120),
+        margin=dict(t=20, b=40, l=70, r=20),
+        legend=dict(orientation="h", y=-0.25, font_size=11),
+        yaxis=dict(autorange="reversed"),
+    )
+    st.plotly_chart(_fig_decomp, width="stretch")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # C. TABLA DE PRIORIZACIÓN
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("C · Tabla de Priorización")
+
+    _df_show = df_holes[[
+        "label", "tipo", "persistence", "indice",
+        "w_P", "w_B", "w_D", "w_R", "w_N",
+        "grado_rezago", "grado_ids", "contexto",
+    ]].copy()
+    _df_show.columns = [
+        "Hueco", "Tipo", "Persistencia (km)", "Índice I(H)",
+        "Pers.×0.40", "IDS bajo×0.25", "Densidad×0.15", "Rezago×0.10", "NBI×0.10",
+        "Rezago social", "Grado IDS", "Contexto social",
+    ]
+    st.dataframe(
+        _df_show.style.background_gradient(subset=["Índice I(H)"], cmap="RdYlGn"),
+        width="stretch",
+    )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # D. LECTURA INTERPRETATIVA
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("D · Lectura Interpretativa de los Huecos Principales")
+
+    for _, _r in df_holes.head(min(5, len(df_holes))).iterrows():
+        _P_lv  = "alta" if _r["P_i"] > 0.7 else "media" if _r["P_i"] > 0.4 else "baja"
+        _tipo  = "interior confirmado" if _r["interior"] else "posible artefacto de borde"
+        _rezago = _r.get("grado_rezago", "—")
+        _ids_g  = _r.get("grado_ids", "—")
+
+        _txt = (
+            f"Persistencia topológica <b>{_P_lv}</b> ({_r['persistence']:.2f} km): "
+            f"el hueco es {'muy estable y estructuralmente robusto' if _P_lv == 'alta' else 'moderadamente estable' if _P_lv == 'media' else 'poco persistente; interpretar con cautela'}. "
+            f"Se clasifica como <b>{_tipo}</b>. "
+        )
+        if _rezago not in ("—", "nan"):
+            _txt += (
+                f"El AGEB más cercano presenta rezago social <b>{_rezago.lower()}</b> "
+                f"y un IDS de nivel <b>{_ids_g.lower()}</b>. "
+            )
+        if _r["B_i"] > 0.6:
+            _txt += "El alto nivel de bajo desarrollo social refuerza la urgencia de intervención. "
+        if _r["N_i"] > 0.6:
+            _txt += "La elevada proporción de necesidades básicas insatisfechas indica demanda significativa de servicios públicos. "
+        if _r["D_i"] > 0.6:
+            _txt += "La alta densidad poblacional amplía el impacto potencial de una nueva unidad de salud. "
+        if _r["contexto"] == "Aproximado":
+            _txt += "<i>(Contexto social asignado desde un AGEB a más de ε km del centroide; interpretar con cautela.)</i>"
+
+        _border_col = (
+            "#d63031" if _r["indice"] > 0.6 else
+            "#e17055" if _r["indice"] > 0.4 else
+            "#fdcb6e" if _r["indice"] > 0.25 else "#74b9ff"
+        )
+        st.markdown(
+            f"<div style='background:#f8f9fa;border-left:4px solid {_border_col};"
+            f"padding:12px 16px;border-radius:4px;margin-bottom:10px'>"
+            f"<b>{_r['label']}</b>&nbsp;&nbsp;"
+            f"Índice: <b>{_r['indice']:.3f}</b> &nbsp;·&nbsp; "
+            f"Persistencia: <b>{_r['persistence']:.2f} km</b>"
+            f"<br><small style='color:#444;line-height:1.5'>{_txt}</small></div>",
+            unsafe_allow_html=True,
+        )
+
+    # ── Nota metodológica ──────────────────────────────────────────────────────
+    with st.expander("Metodología del índice de importancia"):
+        st.markdown("""
+**Fórmula:**
+
+$$I(H_i) = 0.40 \\cdot P_i + 0.25 \\cdot B_i + 0.15 \\cdot D_i + 0.10 \\cdot R_i + 0.10 \\cdot N_i$$
+
+| Variable | Descripción | Fuente | Peso |
+|---|---|---|---|
+| P_i | Persistencia topológica normalizada (death − birth) / max | Ripser / TDA | 0.40 |
+| B_i | Bajo desarrollo social normalizado (1 − IDS_norm) | IDS EVALUA CDMX | 0.25 |
+| D_i | Densidad poblacional normalizada (pob / km²) | IDS × CONEVAL | 0.15 |
+| R_i | Rezago social normalizado | CONEVAL 2020 | 0.10 |
+| N_i | Proporción de NBI normalizada | IDS EVALUA CDMX | 0.10 |
+
+**Asignación espacial:** el centroide de cada hueco se estima a partir de los vértices de su clase homológica.
+La AGEB con centroide más próximo aporta las variables sociales. Si el AGEB está a más de ε km,
+el contexto se marca como *Aproximado*.
+
+**Clasificación interior/borde:** un hueco se considera interior si su centroide está a más de ε km
+del casco convexo de los puntos analizados; de lo contrario, puede ser un artefacto del borde del área.
+        """)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB HALLAZGOS — REPORTE DINÁMICO
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_report:
+
+    st.header("Reporte de Hallazgos Principales")
+    st.caption("El reporte se genera automáticamente según los filtros aplicados.")
+
+    # ── Controles ─────────────────────────────────────────────────────────────
+    rp1, rp2, rp3, rp4 = st.columns([2, 2, 2, 2])
+    with rp1:
+        mun_r = st.selectbox("Alcaldía", ["CDMX completa"] + sorted(denue["municipio"].unique().tolist()), key="mun_r")
+    with rp2:
+        subsec_opts_r = ["Todos los subsectores"] + sorted(
+            denue[denue["sector"] == "Público"]["subsector"].dropna().unique().tolist()
+        )
+        subsec_r = st.selectbox("Subsector", subsec_opts_r, key="subsec_r")
+    with rp3:
+        eps_r = st.slider("Radio ε (km)", 0.25, 8.0, 1.5, 0.25, key="eps_r")
+    with rp4:
+        thresh_r = st.slider("Umbral sig. (km)", 0.1, 3.0, 0.5, 0.1, key="thresh_r")
+
+    from datetime import date
+
+    # ── Preparar datos ────────────────────────────────────────────────────────
+    # 1. Unidades públicas filtradas
+    pub_r = denue[denue["sector"] == "Público"].dropna(subset=["latitud", "longitud"])
+    if mun_r != "CDMX completa":
+        pub_r = pub_r[pub_r["municipio"] == mun_r]
+    if subsec_r != "Todos los subsectores":
+        pub_r = pub_r[pub_r["subsector"] == subsec_r]
+
+    # 2. DENUE completo (todos sectores) para contexto
+    denue_ctx = denue.copy()
+    if mun_r != "CDMX completa":
+        denue_ctx = denue_ctx[denue_ctx["municipio"] == mun_r]
+    if subsec_r != "Todos los subsectores":
+        denue_ctx = denue_ctx[denue_ctx["subsector"] == subsec_r]
+
+    # 3. AGEBs CONEVAL + IDS integrado
+    ageb_full = coneval.merge(
+        ids[["cvegeo", "ids", "grado_ids", "grado_ids_num"]], on="cvegeo", how="left"
+    )
+    if mun_r != "CDMX completa":
+        cve_r = ageb_full["cvegeo"].astype(str).str[2:5]
+        ageb_full = ageb_full[cve_r == MUN_INV.get(mun_r, "000")]
+
+    ageb_geo_r = ageb_full.dropna(subset=["centroide_lat", "centroide_lon"])
+
+    # 4. TDA sobre muestra (máx 2500)
+    pts_r = pub_r[["latitud", "longitud"]].values
+    if len(pts_r) > 2500:
+        pts_r = pub_r.sample(2500, random_state=42)[["latitud", "longitud"]].values
+
+    with st.spinner("Generando análisis…"):
+        if len(pts_r) >= 5:
+            pts_r_key = tuple(map(tuple, pts_r))
+            dgms_r, D_r_list, h1c_r = _compute_tda_full(pts_r_key)
+            D_r    = np.array(D_r_list)
+            h0_r   = np.array(dgms_r[0])
+            h1_r   = np.array(dgms_r[1]) if len(dgms_r[1]) else np.empty((0, 2))
+            max_er = min(float(D_r.max()) if D_r.size else 15.0, 15.0)
+
+            h1_pers_r  = (h1_r[:, 1] - h1_r[:, 0]) if len(h1_r) else np.array([])
+            n_sig_r    = int((h1_pers_r >= thresh_r).sum()) if len(h1_pers_r) else 0
+            max_pers_r = float(h1_pers_r.max()) if len(h1_pers_r) else 0.0
+            # Efecto de borde: clasificar huecos significativos
+            bd_r       = _border_dists(h1c_r[:len(h1_r)], pts_r) if len(h1c_r) else np.array([])
+            sig_mask_r = (h1_pers_r >= thresh_r) if len(h1_pers_r) else np.array([], dtype=bool)
+            n_sig_int_r = int(((sig_mask_r) & (bd_r >= eps_r)).sum()) if len(bd_r) else n_sig_r
+            n_sig_brd_r = n_sig_r - n_sig_int_r
+
+            eps_range_r    = np.linspace(0, max_er, 300)
+            b0_r, b1_r     = _betti_curves(h0_r, h1_r, eps_range_r)
+            peak_eps_r     = float(eps_range_r[b1_r.argmax()]) if b1_r.max() > 0 else 0.0
+            peak_b1_r      = int(b1_r.max())
+
+            # Coverage AGEBs
+            ageb_pts_r = ageb_geo_r[["centroide_lat", "centroide_lon"]].values
+            if len(ageb_pts_r) > 0:
+                md_r = np.array(_compute_coverage(pts_r_key, tuple(map(tuple, ageb_pts_r))))
+                ageb_geo_r = ageb_geo_r.copy()
+                ageb_geo_r["dist_min"]  = md_r
+                ageb_geo_r["cobertura"] = np.where(md_r <= eps_r, "Cubierta", "Sin cobertura")
+                pct_cov_r = float((md_r <= eps_r).mean() * 100)
+                n_unc_r   = int((md_r > eps_r).sum())
+            else:
+                pct_cov_r, n_unc_r = 100.0, 0
+                ageb_geo_r["dist_min"]  = 0.0
+                ageb_geo_r["cobertura"] = "Cubierta"
+        else:
+            st.warning("No hay suficientes unidades públicas con los filtros aplicados.")
+            st.stop()
+
+    # ── Encabezado del reporte ────────────────────────────────────────────────
+    area_label = mun_r if mun_r != "CDMX completa" else "Ciudad de México (CDMX)"
+    subsec_label = subsec_r if subsec_r != "Todos los subsectores" else "todos los subsectores"
+    st.markdown(
+        f"""
+        <div style="background:#f0f4ff;border-left:5px solid #4e8df5;padding:16px 20px;border-radius:6px;margin-bottom:8px">
+        <h3 style="margin:0;color:#1a2f6e">Reporte TDA · Sector Salud Pública</h3>
+        <p style="margin:4px 0 0;color:#444">
+        <b>Área:</b> {area_label} &nbsp;|&nbsp;
+        <b>Subsector:</b> {subsec_label} &nbsp;|&nbsp;
+        <b>Radio ε:</b> {eps_r} km &nbsp;|&nbsp;
+        <b>Umbral sig.:</b> {thresh_r} km &nbsp;|&nbsp;
+        <b>Fecha:</b> {date.today().strftime("%d/%m/%Y")}
+        </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 1. PANORAMA DE LA OFERTA
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("1 · Panorama de la Oferta de Salud Pública")
+
+    r1a, r1b, r1c, r1d = st.columns(4)
+    r1a.metric("Unidades públicas", f"{len(pub_r):,}")
+    r1b.metric("Unidades privadas", f"{len(denue_ctx[denue_ctx['sector']=='Privado']):,}")
+    r1c.metric("No gubernamentales", f"{len(denue_ctx[denue_ctx['sector']=='No gubernamental']):,}")
+    r1d.metric("Total sector salud", f"{len(denue_ctx):,}")
+
+    col_of1, col_of2 = st.columns(2)
+
+    with col_of1:
+        mun_pub_r = pub_r.groupby("municipio").size().reset_index(name="n").sort_values("n", ascending=True)
+        fig_of1 = px.bar(
+            mun_pub_r, x="n", y="municipio", orientation="h",
+            title="Unidades públicas por alcaldía",
+            color="n", color_continuous_scale="Blues",
+            labels={"municipio": "", "n": "Unidades"},
+            height=300,
+        )
+        fig_of1.update_layout(coloraxis_showscale=False, margin=dict(l=0, r=0, t=35, b=0))
+        st.plotly_chart(fig_of1, width="stretch")
+
+    with col_of2:
+        sub_r_counts = pub_r["subsector"].value_counts().reset_index()
+        sub_r_counts.columns = ["subsector", "n"]
+        fig_of2 = px.pie(
+            sub_r_counts, names="subsector", values="n",
+            title="Distribución por subsector (público)",
+            hole=0.42,
+            color_discrete_sequence=px.colors.qualitative.Set2,
+            height=300,
+        )
+        fig_of2.update_layout(margin=dict(l=0, r=0, t=35, b=0))
+        st.plotly_chart(fig_of2, width="stretch")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 2. HALLAZGOS TOPOLÓGICOS
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("2 · Hallazgos del Análisis Topológico (TDA)")
+
+    r2a, r2b, r2c, r2d = st.columns(4)
+    r2a.metric("Huecos H₁ detectados", len(h1_r))
+    r2b.metric(
+        f"Huecos significativos (≥{thresh_r}km)",
+        n_sig_r,
+        f"{n_sig_int_r} interiores · {n_sig_brd_r} borde",
+    )
+    r2c.metric("Persistencia H₁ máxima", f"{max_pers_r:.2f} km")
+    r2d.metric("ε crítico (pico β₁)", f"{peak_eps_r:.2f} km", f"β₁ máx = {peak_b1_r}")
+
+    col_tda1, col_tda2 = st.columns([3, 2])
+
+    with col_tda1:
+        # Curva de Betti compacta
+        df_b_r = pd.DataFrame({
+            "ε (km)": np.concatenate([eps_range_r, eps_range_r]),
+            "Valor": np.concatenate([b0_r, b1_r]),
+            "Indicador": ["β₀ Componentes"] * len(eps_range_r) + ["β₁ Huecos"] * len(eps_range_r),
+        })
+        fig_b_r = px.line(
+            df_b_r, x="ε (km)", y="Valor", color="Indicador",
+            color_discrete_map={"β₀ Componentes": "#e74c3c", "β₁ Huecos": "#3498db"},
+            title="Evolución topológica (Números de Betti)",
+            height=280,
+        )
+        fig_b_r.add_vline(x=eps_r, line_dash="dash", line_color="green", opacity=0.6,
+                          annotation_text=f"ε={eps_r}", annotation_position="top right")
+        if peak_b1_r > 0:
+            fig_b_r.add_vline(x=peak_eps_r, line_dash="dot", line_color="#3498db", opacity=0.5,
+                              annotation_text=f"pico β₁", annotation_position="top left")
+        fig_b_r.update_layout(margin=dict(l=0, r=0, t=35, b=0))
+        st.plotly_chart(fig_b_r, width="stretch")
+
+    with col_tda2:
+        st.markdown("**Top huecos H₁ significativos**")
+        if n_sig_r > 0:
+            sig_mask = h1_pers_r >= thresh_r
+            df_top = pd.DataFrame({
+                "Nacimiento": h1_r[sig_mask, 0].round(3),
+                "Muerte":     h1_r[sig_mask, 1].round(3),
+                "Persist.":   h1_pers_r[sig_mask].round(3),
+            }).sort_values("Persist.", ascending=False).head(8).reset_index(drop=True)
+            df_top.index += 1
+            st.dataframe(df_top, use_container_width=True, height=250)
+        else:
+            st.info(f"Sin huecos con persistencia ≥ {thresh_r} km en la selección.")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 3. BRECHAS DE COBERTURA
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("3 · Brechas de Cobertura")
+
+    r3a, r3b, r3c = st.columns(3)
+    r3a.metric("AGEBs con cobertura", f"{pct_cov_r:.1f}%", f"ε = {eps_r} km")
+    r3b.metric("AGEBs sin cobertura", f"{n_unc_r:,}", f"{100 - pct_cov_r:.1f}%")
+    r3c.metric("Total AGEBs analizadas", f"{len(ageb_geo_r):,}")
+
+    col_cov1, col_cov2 = st.columns(2)
+
+    with col_cov1:
+        rez_ord_r = ["Muy bajo", "Bajo", "Medio", "Alto", "Muy alto"]
+        df_cov_r = (
+            ageb_geo_r.groupby(["cobertura", "grado_rezago_social"])
+            .size().reset_index(name="n")
+        )
+        df_cov_r["grado_rezago_social"] = pd.Categorical(
+            df_cov_r["grado_rezago_social"], categories=rez_ord_r, ordered=True
+        )
+        totals_r = df_cov_r.groupby("cobertura")["n"].transform("sum")
+        df_cov_r["pct"] = (df_cov_r["n"] / totals_r * 100).round(1)
+        fig_cov_r = px.bar(
+            df_cov_r.sort_values("grado_rezago_social"),
+            x="grado_rezago_social", y="pct", color="cobertura",
+            color_discrete_map={"Cubierta": "#2ecc71", "Sin cobertura": "#e74c3c"},
+            barmode="group",
+            title="% AGEBs por rezago: cubiertas vs sin cobertura",
+            labels={"grado_rezago_social": "Rezago", "pct": "% dentro del grupo", "cobertura": ""},
+            height=280,
+        )
+        fig_cov_r.update_layout(margin=dict(l=0, r=0, t=35, b=0))
+        st.plotly_chart(fig_cov_r, width="stretch")
+
+    with col_cov2:
+        # Distancia media por grado de rezago
+        df_dist_r = ageb_geo_r.groupby("grado_rezago_social")["dist_min"].mean().reset_index()
+        df_dist_r.columns = ["Rezago", "dist"]
+        df_dist_r["Rezago"] = pd.Categorical(df_dist_r["Rezago"], categories=rez_ord_r, ordered=True)
+        df_dist_r = df_dist_r.sort_values("Rezago")
+        fig_dist_r = px.bar(
+            df_dist_r, x="Rezago", y="dist",
+            color="Rezago", color_discrete_map=COLORS,
+            title="Distancia media a unidad pública por rezago",
+            labels={"dist": "km promedio", "Rezago": ""},
+            height=280,
+        )
+        fig_dist_r.add_hline(y=eps_r, line_dash="dash", line_color="gray",
+                             annotation_text=f"ε={eps_r}km", annotation_position="right")
+        fig_dist_r.update_layout(showlegend=False, margin=dict(l=0, r=0, t=35, b=0))
+        st.plotly_chart(fig_dist_r, width="stretch")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 4. ZONAS DE MAYOR VULNERABILIDAD
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("4 · Zonas de Mayor Vulnerabilidad")
+    st.caption("AGEBs que combinan rezago social alto/muy alto, bajo IDS **y** están sin cobertura a ε.")
+
+    vuln_r = ageb_geo_r[
+        (ageb_geo_r["grado_rezago_num"] >= 3) &
+        (ageb_geo_r["cobertura"] == "Sin cobertura")
+    ].copy()
+
+    col_v1, col_v2 = st.columns([2, 3])
+
+    with col_v1:
+        nv = len(vuln_r)
+        pct_v = nv / len(ageb_geo_r) * 100 if len(ageb_geo_r) > 0 else 0
+        st.metric("AGEBs vulnerables sin cobertura", nv, f"{pct_v:.1f}% del total")
+        if len(vuln_r) > 0:
+            st.metric("Distancia media (vulnerable)", f"{vuln_r['dist_min'].mean():.2f} km")
+            ids_ok = vuln_r["ids"].dropna()
+            if len(ids_ok):
+                st.metric("IDS promedio (vulnerable)", f"{ids_ok.mean():.3f}")
+            # Distribución por rezago dentro de vulnerables
+            vul_rez = vuln_r["grado_rezago_social"].value_counts()
+            st.markdown("**Rezago en zonas vulnerables:**")
+            for g, n_g in vul_rez.items():
+                pct_g = n_g / nv * 100
+                st.markdown(f"- {g}: **{n_g}** AGEBs ({pct_g:.0f}%)")
+        else:
+            st.success(f"No hay AGEBs vulnerables sin cobertura a ε = {eps_r} km.")
+
+    with col_v2:
+        if len(vuln_r) > 0:
+            fig_v = go.Figure()
+            # AGEBs normales sin cobertura
+            no_vuln = ageb_geo_r[(ageb_geo_r["cobertura"] == "Sin cobertura") &
+                                  (ageb_geo_r["grado_rezago_num"] < 3)]
+            fig_v.add_trace(go.Scattermapbox(
+                lat=no_vuln["centroide_lat"].tolist(),
+                lon=no_vuln["centroide_lon"].tolist(),
+                mode="markers",
+                marker=dict(size=6, color="#f39c12", opacity=0.7),
+                name="Sin cobertura (rezago bajo/medio)",
+            ))
+            fig_v.add_trace(go.Scattermapbox(
+                lat=vuln_r["centroide_lat"].tolist(),
+                lon=vuln_r["centroide_lon"].tolist(),
+                mode="markers",
+                marker=dict(size=10, color="#c0392b", opacity=0.9),
+                name="Vulnerable (rezago alto + sin cobertura)",
+                hovertemplate="Rezago: %{customdata[0]}<br>Dist: %{customdata[1]:.2f}km<extra></extra>",
+                customdata=vuln_r[["grado_rezago_social", "dist_min"]].values.tolist(),
+            ))
+            # Unidades públicas de fondo
+            fig_v.add_trace(go.Scattermapbox(
+                lat=pub_r["latitud"].tolist()[:500],
+                lon=pub_r["longitud"].tolist()[:500],
+                mode="markers",
+                marker=dict(size=4, color="#2ecc71", opacity=0.5),
+                name="Unidades públicas",
+            ))
+            cl_v = float(ageb_geo_r["centroide_lat"].mean())
+            co_v = float(ageb_geo_r["centroide_lon"].mean())
+            fig_v.update_layout(
+                mapbox=dict(style="carto-positron",
+                            center=dict(lat=cl_v, lon=co_v),
+                            zoom=11 if mun_r != "CDMX completa" else 10),
+                height=320,
+                margin=dict(l=0, r=0, t=0, b=0),
+                legend=dict(bgcolor="rgba(255,255,255,0.85)", font=dict(size=10)),
+            )
+            st.plotly_chart(fig_v, width="stretch")
+        else:
+            st.info("No hay zonas vulnerables con los filtros actuales.")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 5. HALLAZGOS CLAVE
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("5 · Hallazgos Clave")
+
+    sinc_r    = ageb_geo_r[ageb_geo_r["cobertura"] == "Sin cobertura"]
+    top_rez_r = sinc_r["grado_rezago_social"].value_counts().idxmax() if len(sinc_r) else "—"
+    max_dist_rez_r = (
+        ageb_geo_r.groupby("grado_rezago_social")["dist_min"].mean().idxmax()
+        if len(ageb_geo_r) > 0 else "—"
+    )
+
+    hallazgos = [
+        (
+            " Oferta pública",
+            f"En {area_label} hay **{len(pub_r):,}** unidades de salud pública "
+            + (f"del subsector **{subsec_r}**" if subsec_r != "Todos los subsectores" else "de todos los subsectores")
+            + f". El subsector con mayor presencia es **{pub_r['subsector'].value_counts().idxmax() if len(pub_r) else '—'}**."
+        ),
+        (
+            " Estructura topológica",
+            f"El análisis TDA identifica **{len(h1_r)} huecos topológicos**, de los cuales "
+            f"**{n_sig_r} son significativos** (persistencia ≥ {thresh_r} km): "
+            f"**{n_sig_int_r} interiores** (reales) y **{n_sig_brd_r} posibles artefactos de borde**. "
+            f"El radio crítico donde coexisten más huecos es **ε ≈ {peak_eps_r:.2f} km**."
+        ),
+        (
+            " Cobertura geográfica",
+            f"A un radio de **{eps_r} km**, el **{pct_cov_r:.1f}%** de las AGEBs cuenta con "
+            f"al menos una unidad pública de salud cercana. Quedan **{n_unc_r} AGEBs sin cobertura** "
+            f"({100 - pct_cov_r:.1f}% del total analizado)."
+        ),
+        (
+            "⚠️ Rezago y cobertura",
+            f"El grado de rezago más frecuente entre las AGEBs sin cobertura es **{top_rez_r}**. "
+            f"Las AGEBs con rezago **{max_dist_rez_r}** tienen la mayor distancia media al servicio público más cercano."
+        ),
+        (
+            " Zonas vulnerables",
+            f"Se identifican **{len(vuln_r)} AGEBs** que combinan rezago social alto/muy alto "
+            f"y ausencia de cobertura a ε = {eps_r} km. "
+            + (f"Representan el **{len(vuln_r)/len(ageb_geo_r)*100:.1f}%** de las AGEBs analizadas." if len(ageb_geo_r) > 0 else "")
+        ),
+        (
+            " Conectividad",
+            f"La red pública se conecta completamente (β₀ = 1) a partir de aproximadamente "
+            f"**ε = {f'{float(eps_range_r[b0_r == 1][0]):.2f}' if (b0_r == 1).any() else f'>{max_er:.2f}'} km**. "
+            f"La persistencia H₁ máxima es **{max_pers_r:.2f} km**, "
+            f"indicando el tamaño del hueco estructural más grande."
+        ),
+    ]
+
+    for icon_title, texto in hallazgos:
+        st.markdown(
+            f"<div style='background:#f9f9f9;border-left:4px solid #4e8df5;"
+            f"padding:10px 14px;border-radius:4px;margin-bottom:8px'>"
+            f"<b>{icon_title}</b><br>{texto}</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 6. RECOMENDACIONES
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("6 · Recomendaciones")
+
+    recomendaciones = []
+
+    if n_sig_int_r >= 3:
+        recomendaciones.append(
+            f"**Priorizar intervención en huecos H₁ interiores persistentes.** "
+            f"Se detectaron {n_sig_int_r} vacíos estructurales interiores (no artefactos de borde) "
+            f"con persistencia ≥ {thresh_r} km. Se recomienda evaluar la instalación de nuevas "
+            f"unidades públicas en los centros aproximados de estos huecos."
+        )
+    elif n_sig_r >= 3 and n_sig_int_r < 3:
+        recomendaciones.append(
+            f"**Verificar huecos H₁ detectados cerca del borde del área.** "
+            f"De los {n_sig_r} huecos significativos, {n_sig_brd_r} son probables artefactos de borde "
+            f"(generados por la ausencia de datos de estados vecinos). Solo {n_sig_int_r} "
+            f"son huecos interiores confirmados."
+        )
+    if len(vuln_r) > 0:
+        recomendaciones.append(
+            f"**Atención urgente a {len(vuln_r)} AGEBs vulnerables.** "
+            f"Estas zonas combinan rezago social alto/muy alto con ausencia de cobertura "
+            f"pública a {eps_r} km. Son las de mayor urgencia de intervención."
+        )
+    if pct_cov_r < 80:
+        recomendaciones.append(
+            f"**Ampliar cobertura: solo {pct_cov_r:.0f}% de AGEBs cubiertas.** "
+            f"Incrementar la densidad de unidades públicas para alcanzar cobertura universal "
+            f"dentro del radio de {eps_r} km establecido como estándar."
+        )
+    if peak_eps_r > 0:
+        recomendaciones.append(
+            f"**Radio de planificación sugerido: {peak_eps_r:.2f} km.** "
+            f"Este es el radio donde la red presenta la mayor complejidad topológica (pico β₁). "
+            f"Usarlo como referencia para el diseño de áreas de servicio."
+        )
+    recomendaciones.append(
+        f"**Profundizar el análisis a nivel AGEB.** "
+        f"El siguiente paso es construir el complejo de Čech con los parámetros identificados "
+        f"y cruzar los generadores H₁ con datos de densidad poblacional y NBI para priorizar."
+    )
+
+    rec_colors = ["#e8f5e9", "#fff3e0", "#fce4ec", "#e3f2fd", "#f3e5f5"]
+    rec_borders = ["#2ecc71", "#f39c12", "#e74c3c", "#3498db", "#9b59b6"]
+    for i, rec in enumerate(recomendaciones):
+        c = rec_colors[i % len(rec_colors)]
+        b = rec_borders[i % len(rec_borders)]
+        st.markdown(
+            f"<div style='background:{c};border-left:4px solid {b};"
+            f"padding:10px 14px;border-radius:4px;margin-bottom:8px'>"
+            f"<b>R{i+1}.</b> {rec}</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    # ── Exportar reporte ──────────────────────────────────────────────────────
+    st.subheader("Exportar Reporte")
+
+    reporte_md = f"""# Reporte TDA — Sector Salud Pública
+**Área:** {area_label}
+**Subsector:** {subsec_label}
+**Radio ε:** {eps_r} km · **Umbral significancia:** {thresh_r} km
+**Fecha:** {date.today().strftime("%d/%m/%Y")}
+**Fuentes:** DENUE 2025 (INEGI) · CONEVAL 2020 · IDS EVALUA CDMX
+
+---
+
+## 1. Oferta de Salud Pública
+- Unidades públicas: {len(pub_r):,}
+- Unidades privadas: {len(denue_ctx[denue_ctx['sector']=='Privado']):,}
+- Total sector salud: {len(denue_ctx):,}
+
+## 2. Hallazgos Topológicos (TDA)
+- Huecos H₁ detectados: {len(h1_r)}
+- Huecos significativos (≥{thresh_r} km): {n_sig_r} ({n_sig_int_r} interiores · {n_sig_brd_r} posibles artefactos de borde)
+- Persistencia H₁ máxima: {max_pers_r:.2f} km
+- Radio crítico (pico β₁): {peak_eps_r:.2f} km (β₁ máx = {peak_b1_r})
+
+## 3. Cobertura
+- AGEBs con cobertura a ε={eps_r} km: {pct_cov_r:.1f}%
+- AGEBs sin cobertura: {n_unc_r:,} ({100-pct_cov_r:.1f}%)
+- Total AGEBs analizadas: {len(ageb_geo_r):,}
+
+## 4. Vulnerabilidad Social
+- AGEBs con rezago alto + sin cobertura: {len(vuln_r)}
+- Rezago más frecuente en AGEBs sin cobertura: {top_rez_r}
+- Rezago con mayor distancia media al servicio: {max_dist_rez_r}
+
+## 5. Hallazgos Clave
+""" + "\n".join([f"- **{t}**: {txt}" for t, txt in hallazgos]) + "\n\n## 6. Recomendaciones\n" + "\n".join([f"R{i+1}. {r}" for i, r in enumerate(recomendaciones)])
+
+    st.download_button(
+        label="⬇️ Descargar reporte (.md)",
+        data=reporte_md.encode("utf-8"),
+        file_name=f"reporte_tda_{mun_r.replace(' ','_').lower()}_{date.today()}.md",
+        mime="text/markdown",
+    )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB COMPARACIÓN — TDA vs K-MEANS + PCA
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_compare:
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.decomposition import PCA
+    from sklearn.cluster import KMeans
+
+    st.header("Comparación: TDA vs K-Means + PCA")
+    st.caption(
+        "K-Means agrupa AGEBs por similitud de atributos socioeconómicos. "
+        "TDA detecta vacíos estructurales en la red de cobertura. "
+        "Aquí contrastamos ambas perspectivas sobre el mismo territorio."
+    )
+
+    # ── Controles ─────────────────────────────────────────────────────────────
+    cmp1, cmp2, cmp3, cmp4 = st.columns([2, 2, 1, 1])
+    with cmp1:
+        mun_cmp = st.selectbox(
+            "Alcaldía",
+            ["CDMX completa"] + sorted(denue["municipio"].unique().tolist()),
+            key="mun_cmp",
+        )
+    with cmp2:
+        subsec_opts_cmp = ["Todos los subsectores"] + sorted(
+            denue[denue["sector"] == "Público"]["subsector"].dropna().unique().tolist()
+        )
+        subsec_cmp = st.selectbox("Subsector público", subsec_opts_cmp, key="subsec_cmp")
+    with cmp3:
+        k_cmp = st.slider("K (clusters)", 2, 8, 4, key="k_cmp")
+    with cmp4:
+        eps_cmp = st.slider("ε TDA (km)", 0.25, 8.0, 1.5, 0.25, key="eps_cmp")
+
+    # ── Preparar datos ─────────────────────────────────────────────────────────
+    # 1. AGEBs con variables socioeconómicas
+    ageb_cmp = coneval.merge(
+        ids[["cvegeo", "ids_norm", "grado_ids_num"]], on="cvegeo", how="left"
+    ).dropna(subset=["centroide_lat", "centroide_lon", "rezago_norm"])
+
+    if mun_cmp != "CDMX completa":
+        _cve_cmp = ageb_cmp["cvegeo"].astype(str).str[2:5]
+        ageb_cmp = ageb_cmp[_cve_cmp == MUN_INV.get(mun_cmp, "000")]
+
+    # 2. Unidades públicas filtradas
+    pub_cmp = denue[denue["sector"] == "Público"].dropna(subset=["latitud", "longitud"])
+    if mun_cmp != "CDMX completa":
+        pub_cmp = pub_cmp[pub_cmp["municipio"] == mun_cmp]
+    if subsec_cmp != "Todos los subsectores":
+        pub_cmp = pub_cmp[pub_cmp["subsector"] == subsec_cmp]
+
+    # 3. Distancia AGEB → unidad pública más cercana
+    ageb_cmp = ageb_cmp.copy()
+    if len(ageb_cmp) > 0 and len(pub_cmp) > 0:
+        _ageb_pts  = ageb_cmp[["centroide_lat", "centroide_lon"]].values
+        _pub_pts   = pub_cmp[["latitud", "longitud"]].values
+        _D_ap      = _dist_cross_km(_ageb_pts, _pub_pts)
+        ageb_cmp["dist_nearest"] = _D_ap.min(axis=1)
+    else:
+        ageb_cmp["dist_nearest"] = 0.0
+
+    # 4. Matriz de características y limpieza
+    _feat_cols = ["centroide_lat", "centroide_lon", "rezago_norm", "ids_norm", "dist_nearest"]
+    ageb_feat = ageb_cmp.dropna(subset=_feat_cols).reset_index(drop=True)
+
+    if len(ageb_feat) < 10:
+        st.warning("Pocos AGEBs con este filtro. Amplía la selección.")
+        st.stop()
+
+    X_raw = ageb_feat[_feat_cols].values
+    _scaler = StandardScaler()
+    Xs = _scaler.fit_transform(X_raw)
+
+    # 5. PCA
+    _n_comp = min(5, Xs.shape[1])
+    _pca = PCA(n_components=_n_comp, random_state=42)
+    Xpca = _pca.fit_transform(Xs)
+
+    # 6. K-Means con k seleccionado
+    _km = KMeans(n_clusters=k_cmp, random_state=42, n_init=10)
+    _km_labels = _km.fit_predict(Xs)
+
+    ageb_feat = ageb_feat.copy()
+    ageb_feat["km_cluster"] = [f"C{lb+1}" for lb in _km_labels]
+    ageb_feat["pc1"] = Xpca[:, 0]
+    ageb_feat["pc2"] = Xpca[:, 1]
+
+    # 7. Curva del codo
+    _inertias = [
+        KMeans(n_clusters=ki, random_state=42, n_init=5).fit(Xs).inertia_
+        for ki in range(2, 9)
+    ]
+
+    # 8. TDA sobre unidades públicas (máx 2500, cached)
+    _pts_cmp = pub_cmp[["latitud", "longitud"]].values
+    if len(_pts_cmp) > 2500:
+        _pts_cmp = pub_cmp.sample(2500, random_state=42)[["latitud", "longitud"]].values
+
+    _cluster_colors = px.colors.qualitative.Set2
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # A. PCA
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("A · Análisis de Componentes Principales (PCA)")
+    st.caption(
+        "5 variables por AGEB: ubicación geográfica (lat/lon), rezago social normalizado, "
+        "IDS normalizado y distancia a la unidad pública más cercana."
+    )
+
+    colA1, colA2 = st.columns(2)
+
+    with colA1:
+        _ev  = _pca.explained_variance_ratio_
+        _cev = np.cumsum(_ev)
+        fig_scree = go.Figure()
+        fig_scree.add_bar(
+            x=[f"PC{i+1}" for i in range(_n_comp)],
+            y=(_ev * 100).tolist(),
+            name="Varianza (%)", marker_color="#4e8df5",
+        )
+        fig_scree.add_scatter(
+            x=[f"PC{i+1}" for i in range(_n_comp)],
+            y=(_cev * 100).tolist(),
+            name="Acumulada (%)", mode="lines+markers",
+            line=dict(color="#e74c3c", width=2), marker=dict(size=7),
+        )
+        fig_scree.update_layout(
+            title="Varianza explicada por componente",
+            yaxis_title="% varianza", height=320,
+            legend=dict(orientation="h", y=-0.3),
+            margin=dict(t=40, b=50),
+        )
+        st.plotly_chart(fig_scree, width="stretch")
+
+    with colA2:
+        _rezago_order = ["Muy bajo", "Bajo", "Medio", "Alto", "Muy alto"]
+        fig_pca = px.scatter(
+            ageb_feat, x="pc1", y="pc2",
+            color="grado_rezago_social",
+            color_discrete_map=COLORS,
+            category_orders={"grado_rezago_social": _rezago_order},
+            labels={"pc1": "PC1", "pc2": "PC2", "grado_rezago_social": "Rezago social"},
+            title="Biplot PC1 vs PC2 (color = rezago social)",
+            height=320, opacity=0.65,
+        )
+        fig_pca.update_traces(marker_size=5)
+        fig_pca.update_layout(margin=dict(t=40, b=20))
+        st.plotly_chart(fig_pca, width="stretch")
+
+    with st.expander("Cargas (loadings) PCA"):
+        _feat_labels = ["Latitud", "Longitud", "Rezago norm.", "IDS norm.", "Dist. a unidad (km)"]
+        _df_loads = pd.DataFrame(
+            _pca.components_.T,
+            index=_feat_labels,
+            columns=[f"PC{i+1}" for i in range(_n_comp)],
+        ).round(3)
+        st.dataframe(_df_loads, width="stretch")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # B. K-MEANS
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("B · Clustering K-Means")
+
+    colB1, colB2 = st.columns([1, 2])
+
+    with colB1:
+        fig_elbow = go.Figure(go.Scatter(
+            x=list(range(2, 9)), y=_inertias,
+            mode="lines+markers",
+            line=dict(color="#f39c12", width=2),
+            marker=dict(size=8, color="#f39c12"),
+        ))
+        fig_elbow.add_vline(
+            x=k_cmp, line_dash="dash", line_color="#e74c3c",
+            annotation_text=f"k={k_cmp}", annotation_position="top right",
+        )
+        fig_elbow.update_layout(
+            title="Codo (inercia vs k)",
+            xaxis_title="k", yaxis_title="Inercia",
+            height=260, margin=dict(t=40, b=20),
+        )
+        st.plotly_chart(fig_elbow, width="stretch")
+
+        _prof_cols = {"rezago_norm": "Rezago", "ids_norm": "IDS", "dist_nearest": "Dist. (km)"}
+        _df_prof = (
+            ageb_feat.groupby("km_cluster")[list(_prof_cols.keys())]
+            .mean().round(3)
+            .rename(columns=_prof_cols)
+        )
+        _df_prof.index.name = "Cluster"
+        st.markdown("**Perfil medio por cluster**")
+        st.dataframe(_df_prof, width="stretch")
+
+    with colB2:
+        fig_km_map = px.scatter_map(
+            ageb_feat,
+            lat="centroide_lat", lon="centroide_lon",
+            color="km_cluster",
+            color_discrete_sequence=_cluster_colors,
+            hover_data={"grado_rezago_social": True, "dist_nearest": ":.2f", "km_cluster": True},
+            labels={"km_cluster": "Cluster"},
+            title=f"Clusters K-Means (k={k_cmp}) — AGEBs CDMX",
+            zoom=10, height=420,
+        )
+        fig_km_map.update_layout(
+            map_style="carto-positron",
+            margin=dict(t=40, b=0, l=0, r=0),
+        )
+        st.plotly_chart(fig_km_map, width="stretch")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # C. TDA — huecos H₁ sobre unidades públicas
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("C · Huecos Topológicos TDA (H₁) sobre red pública")
+
+    with st.spinner("Calculando TDA…"):
+        if len(_pts_cmp) >= 5:
+            _pts_cmp_key = tuple(map(tuple, _pts_cmp))
+            _dgms_cmp, _D_cmp_list, _h1c_raw = _compute_tda_full(_pts_cmp_key)
+            _D_cmp  = np.array(_D_cmp_list)
+            _h1_cmp = np.array(_dgms_cmp[1]) if len(_dgms_cmp[1]) else np.empty((0, 2))
+            _max_ec = min(float(_D_cmp.max()) if _D_cmp.size else 15.0, 15.0)
+            _h1p    = _h1_cmp[:, 1] - _h1_cmp[:, 0] if len(_h1_cmp) else np.array([])
+            _sig_c  = _h1p >= 0.5
+            _h1c_arr = np.array(_h1c_raw[:len(_h1_cmp)]) if len(_h1c_raw) else np.empty((0, 2))
+            _bd_c   = _border_dists(_h1c_arr, _pts_cmp) if len(_h1c_arr) else np.array([])
+            _int_c  = (_sig_c & (_bd_c >= eps_cmp)) if len(_bd_c) else _sig_c.copy()
+            _brd_c  = _sig_c & ~_int_c
+        else:
+            _h1_cmp  = np.empty((0, 2))
+            _h1c_arr = np.empty((0, 2))
+            _max_ec  = 8.0
+            _sig_c   = np.array([], dtype=bool)
+            _int_c   = np.array([], dtype=bool)
+            _brd_c   = np.array([], dtype=bool)
+
+    _n_h1_c   = len(_h1_cmp)
+    _n_sig_c  = int(_sig_c.sum())
+    _n_int_c  = int(_int_c.sum())
+
+    colC1, colC2 = st.columns([1, 2])
+
+    with colC1:
+        st.metric("Huecos H₁ detectados", _n_h1_c)
+        st.metric("Significativos (pers. ≥ 0.5 km)", _n_sig_c)
+        st.metric("Interiores confirmados", _n_int_c,
+                  f"{_n_sig_c - _n_int_c} posibles artefactos de borde")
+        st.metric("Unidades públicas analizadas", len(_pts_cmp))
+        if _n_h1_c > 0:
+            _fig_bc = _barcode_fig(_h1_cmp, "Barcode H₁", "#e74c3c", _max_ec)
+            _fig_bc.update_layout(height=220, margin=dict(t=30, b=20))
+            st.plotly_chart(_fig_bc, width="stretch")
+
+    with colC2:
+        # Mapa de AGEBs coloreadas por K-Means + huecos TDA superpuestos
+        fig_overlay = px.scatter_map(
+            ageb_feat,
+            lat="centroide_lat", lon="centroide_lon",
+            color="km_cluster",
+            color_discrete_sequence=_cluster_colors,
+            opacity=0.5,
+            hover_data={"grado_rezago_social": True, "dist_nearest": ":.2f"},
+            labels={"km_cluster": "Cluster K-Means"},
+            title=f"Clusters K-Means + huecos TDA (ε={eps_cmp} km)",
+            zoom=10, height=440,
+        )
+        if _n_int_c > 0:
+            _int_centers = _h1c_arr[_int_c]
+            fig_overlay.add_trace(go.Scattermap(
+                lat=_int_centers[:, 0].tolist(),
+                lon=_int_centers[:, 1].tolist(),
+                mode="markers",
+                marker=dict(size=18, color="#e74c3c", symbol="x"),
+                name="Hueco TDA interior",
+                hovertemplate=(
+                    "<b>Hueco H₁ interior</b><br>"
+                    "lat=%{lat:.4f}<br>lon=%{lon:.4f}<extra></extra>"
+                ),
+            ))
+        if int(_brd_c.sum()) > 0:
+            _brd_centers = _h1c_arr[_brd_c]
+            fig_overlay.add_trace(go.Scattermap(
+                lat=_brd_centers[:, 0].tolist(),
+                lon=_brd_centers[:, 1].tolist(),
+                mode="markers",
+                marker=dict(size=14, color="#aaa", symbol="x"),
+                name="Artefacto de borde",
+                hovertemplate=(
+                    "<b>Posible artefacto de borde</b><br>"
+                    "lat=%{lat:.4f}<br>lon=%{lon:.4f}<extra></extra>"
+                ),
+            ))
+        fig_overlay.update_layout(
+            map_style="carto-positron",
+            margin=dict(t=40, b=0, l=0, r=0),
+        )
+        st.plotly_chart(fig_overlay, width="stretch")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # D. CONTRASTE — ¿Qué gana TDA?
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("D · ¿Qué gana TDA sobre K-Means?")
+
+    # Marcar AGEBs dentro del radio de algún hueco interior
+    ageb_feat = ageb_feat.copy()
+    if _n_int_c > 0:
+        _int_centers = _h1c_arr[_int_c]
+        _ageb_coords = ageb_feat[["centroide_lat", "centroide_lon"]].values
+        _D_hole      = _dist_cross_km(_ageb_coords, _int_centers)
+        ageb_feat["dist_to_hole"] = _D_hole.min(axis=1)
+        ageb_feat["en_hueco_tda"] = ageb_feat["dist_to_hole"] < eps_cmp
+    else:
+        ageb_feat["dist_to_hole"] = np.nan
+        ageb_feat["en_hueco_tda"] = False
+
+    colD1, colD2 = st.columns(2)
+
+    with colD1:
+        # Scatter PCA coloreado por K-Means; ✕ = AGEB dentro de hueco TDA
+        fig_contrast = px.scatter(
+            ageb_feat, x="pc1", y="pc2",
+            color="km_cluster",
+            color_discrete_sequence=_cluster_colors,
+            symbol="en_hueco_tda",
+            symbol_map={True: "x", False: "circle"},
+            labels={
+                "pc1": "PC1", "pc2": "PC2",
+                "km_cluster": "Cluster", "en_hueco_tda": "En hueco TDA",
+            },
+            title="Espacio PCA — clusters K-Means (✕ = dentro de hueco TDA)",
+            height=380, opacity=0.75,
+        )
+        fig_contrast.update_traces(marker_size=6)
+        fig_contrast.update_layout(margin=dict(t=40, b=20))
+        st.plotly_chart(fig_contrast, width="stretch")
+
+    with colD2:
+        # Boxplot distancia a unidad pública por cluster
+        fig_box = px.box(
+            ageb_feat, x="km_cluster", y="dist_nearest",
+            color="km_cluster",
+            color_discrete_sequence=_cluster_colors,
+            points="outliers",
+            labels={"km_cluster": "Cluster", "dist_nearest": "Dist. a unidad pública (km)"},
+            title="Distancia a unidad pública por cluster K-Means",
+            height=380,
+        )
+        fig_box.update_layout(showlegend=False, margin=dict(t=40, b=20))
+        st.plotly_chart(fig_box, width="stretch")
+
+    # Tabla: huecos por cluster
+    if _n_int_c > 0:
+        _df_hc = ageb_feat.groupby("km_cluster")["en_hueco_tda"].agg(
+            en_hueco="sum", total="count"
+        ).reset_index()
+        _df_hc["% en hueco"] = (_df_hc["en_hueco"] / _df_hc["total"] * 100).round(1)
+        _df_hc.columns = ["Cluster", "AGEBs en hueco TDA", "Total AGEBs", "% en hueco"]
+        st.markdown("**AGEBs dentro de huecos topológicos por cluster K-Means**")
+        st.dataframe(_df_hc, width="stretch")
+        st.caption(
+            "Un hueco TDA puede cruzar varios clusters de K-Means, "
+            "demostrando que el vacío de cobertura es estructural y no depende del perfil socioeconómico."
+        )
+
+    # Tabla comparativa de métodos
+    st.markdown("### Resumen: ¿qué detecta cada método?")
+    _cmp_df = pd.DataFrame({
+        "Método":                        ["K-Means",                                            "PCA",                                               "TDA (H₁)"],
+        "¿Qué detecta?":                 ["Grupos de AGEBs con perfil socioeconómico similar",  "Dimensiones latentes de variación territorial",     "Vacíos estructurales en la red de cobertura"],
+        "¿Detecta huecos de cobertura?": ["No",                                                 "No",                                                "Sí"],
+        "¿Usa topología espacial?":      ["Parcial (lat/lon como variable)",                    "No directamente",                                   "Sí (intrínsecamente)"],
+        "Parámetro clave":               [f"k = {k_cmp} clusters",                              f"{_n_comp} componentes",                            f"ε = {eps_cmp} km"],
+    })
+    st.dataframe(_cmp_df, width="stretch")
+
+    # Insight cards
+    _insights = [
+        ("#e8f5e9", "#2ecc71", "Lo que K-Means sí puede",
+         "Identificar territorios con perfiles similares de rezago, IDS y acceso. "
+         "Útil para priorizar zonas de alta vulnerabilidad socioeconómica y asignar recursos de manera eficiente."),
+        ("#fce4ec", "#e74c3c", "Lo que K-Means no puede",
+         "Detectar huecos topológicos en la red de servicios. Un cluster de baja vulnerabilidad "
+         "puede contener un vacío real de cobertura si la red de salud no conecta esa zona con ninguna unidad pública."),
+        ("#e3f2fd", "#3498db", f"El valor agregado de TDA ({_n_int_c} hueco{'s' if _n_int_c != 1 else ''} interior{'es' if _n_int_c != 1 else ''} confirmado{'s' if _n_int_c != 1 else ''})",
+         f"TDA identifica {_n_int_c} hueco{'s' if _n_int_c != 1 else ''} interior{'es' if _n_int_c != 1 else ''} confirmado{'s' if _n_int_c != 1 else ''} "
+         f"que representan zonas sin acceso estructural a salud pública independientemente del perfil "
+         f"socioeconómico del área. Estos vacíos trascienden los límites de los clusters de K-Means y "
+         f"sólo son visibles con análisis topológico."),
+    ]
+    for _bg, _bd, _title, _text in _insights:
+        st.markdown(
+            f"<div style='background:{_bg};border-left:4px solid {_bd};"
+            f"padding:10px 14px;border-radius:4px;margin-bottom:8px'>"
+            f"<b>{_title}</b><br>{_text}</div>",
+            unsafe_allow_html=True,
         )
