@@ -940,18 +940,21 @@ with tab_complejos:
         show_rezago_layer = st.toggle("Mostrar capa de rezago AGEBs", value=True)
 
     # ── Controles fila 2 ─────────────────────────────────────────────────────
-    cc4, cc5 = st.columns([3, 2])
+    cc4, cc5, cc6 = st.columns([2, 3, 2])
     with cc4:
+        sector_opts = sorted(denue["sector"].dropna().unique().tolist())
+        sector_sel = st.selectbox("Sector", sector_opts, index=sector_opts.index("Público") if "Público" in sector_opts else 0, key="sector_comp")
+    with cc5:
         subsec_opts = ["Todos los subsectores"] + sorted(
-            denue[denue["sector"] == "Público"]["subsector"].dropna().unique().tolist()
+            denue[denue["sector"] == sector_sel]["subsector"].dropna().unique().tolist()
         )
         subsec_sel = st.selectbox("Subsector a analizar", subsec_opts, key="subsec_comp")
-    with cc5:
+    with cc6:
         max_pts = st.slider("Máximo de puntos", min_value=50, max_value=2500, value=600, step=50,
                             help="Limita el número de unidades para el cómputo TDA")
 
     # ── Filtrado unidades públicas ────────────────────────────────────────────
-    pub_all = denue[denue["sector"] == "Público"].dropna(subset=["latitud", "longitud"])
+    pub_all = denue[denue["sector"] == sector_sel].dropna(subset=["latitud", "longitud"])
     pub_f   = pub_all if mun_sel == "CDMX completa" else pub_all[pub_all["municipio"] == mun_sel]
     if subsec_sel != "Todos los subsectores":
         pub_f = pub_f[pub_f["subsector"] == subsec_sel]
@@ -962,7 +965,7 @@ with tab_complejos:
         pub_f   = pub_f.sample(max_pts, random_state=42)
         sampled = True
 
-    info_parts = []
+    info_parts = [f"Sector: **{sector_sel}**"]
     if subsec_sel != "Todos los subsectores":
         info_parts.append(f"Subsector: **{subsec_sel}**")
     if sampled:
@@ -1018,7 +1021,7 @@ with tab_complejos:
         pct_cov, n_uncov = 0.0, 0
 
     km1, km2, km3, km4 = st.columns(4)
-    km1.metric("Unidades públicas", f"{len(pub_f):,}", mun_sel)
+    km1.metric(f"Unidades {sector_sel.lower()}", f"{len(pub_f):,}", mun_sel)
     km2.metric("Componentes conexas H₀", n_comp,  f"ε = {eps} km")
     km3.metric("Huecos activos H₁",      n_holes, f"ε = {eps} km")
     km4.metric("AGEBs con cobertura",    f"{pct_cov:.1f}%", f"{n_uncov} sin cobertura")
@@ -1032,7 +1035,7 @@ with tab_complejos:
     st.caption(
         f"**Azul**: zona de cobertura (radio ε/2 = {eps/2:.2f} km). "
         f"**Amarillo**: aristas del complejo (d ≤ {eps} km). "
-        f"**Puntos**: unidades de salud públicas por subsector."
+        f"**Puntos**: unidades de salud {sector_sel.lower()} por subsector."
     )
 
     fig_vr = go.Figure()
@@ -1078,7 +1081,7 @@ with tab_complejos:
             legendgroup="vr",
         ))
 
-    # Capa 3: unidades públicas por subsector
+    # Capa 3: unidades por subsector
     SUBSEC_COL = {
         "Servicios ambulatorios": "#e74c3c",
         "Asistencia social":      "#3498db",
@@ -1263,16 +1266,19 @@ with tab_persist:
     )
 
     # ── Controles ─────────────────────────────────────────────────────────────
-    pa, pb, pc = st.columns([2, 2, 2])
+    pa, pb, pc, pd0 = st.columns([2, 2, 2, 2])
     with pa:
         mun_list_p = ["CDMX completa"] + sorted(denue["municipio"].unique().tolist())
         mun_p = st.selectbox("Alcaldía", mun_list_p, key="mun_persist")
     with pb:
+        sector_opts_p = sorted(denue["sector"].dropna().unique().tolist())
+        sector_p = st.selectbox("Sector", sector_opts_p, index=sector_opts_p.index("Público") if "Público" in sector_opts_p else 0, key="sector_persist")
+    with pc:
         subsec_opts_p = ["Todos los subsectores"] + sorted(
-            denue[denue["sector"] == "Público"]["subsector"].dropna().unique().tolist()
+            denue[denue["sector"] == sector_p]["subsector"].dropna().unique().tolist()
         )
         subsec_p = st.selectbox("Subsector", subsec_opts_p, key="subsec_persist")
-    with pc:
+    with pd0:
         max_pts_p = st.slider("Máx. puntos", 50, 2500, 600, 50, key="maxpts_persist")
 
     pd1, pd2 = st.columns([3, 2])
@@ -1286,7 +1292,7 @@ with tab_persist:
         eps_p = st.slider("ε de referencia (km)", 0.25, 8.0, 1.5, 0.25, key="eps_persist")
 
     # ── Filtrado ──────────────────────────────────────────────────────────────
-    pub_p = denue[denue["sector"] == "Público"].dropna(subset=["latitud", "longitud"])
+    pub_p = denue[denue["sector"] == sector_p].dropna(subset=["latitud", "longitud"])
     if mun_p != "CDMX completa":
         pub_p = pub_p[pub_p["municipio"] == mun_p]
     if subsec_p != "Todos los subsectores":
@@ -1297,9 +1303,6 @@ with tab_persist:
         st.caption(f"⚠️ Muestra de {max_pts_p} de {n_univ_p} unidades.")
 
     pts_p  = pub_p[["latitud", "longitud"]].values
-    lats_p = pts_p[:, 0]
-    lons_p = pts_p[:, 1]
-
     if len(pts_p) < 5:
         st.warning("Muy pocas unidades para el análisis. Amplía el filtro.")
         st.stop()
@@ -1487,99 +1490,9 @@ with tab_persist:
     st.divider()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # D. MAPA DE HUECOS DE COBERTURA
+    # D. INTERPRETACIÓN
     # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("D · Mapa de Huecos de Cobertura")
-    st.caption(
-        "Grilla de distancia al punto público más cercano. "
-        "**Naranja ✕** = hueco H₁ significativo interior (real). "
-        "**Gris ✕** = posible artefacto de borde (frontera del área analizada)."
-    )
-
-    pad = 0.04
-    g_lats, g_lons, g_dists = _compute_grid_coverage(
-        pts_p_key,
-        float(lats_p.min()) - pad, float(lats_p.max()) + pad,
-        float(lons_p.min()) - pad, float(lons_p.max()) + pad,
-    )
-    df_grid = pd.DataFrame({"lat": g_lats, "lon": g_lons, "dist_km": g_dists})
-
-    fig_hm = go.Figure()
-
-    # Capa grilla de cobertura
-    fig_hm.add_trace(go.Scattermapbox(
-        lat=df_grid["lat"].tolist(),
-        lon=df_grid["lon"].tolist(),
-        mode="markers",
-        marker=dict(
-            size=9,
-            color=df_grid["dist_km"].tolist(),
-            colorscale="RdYlGn_r",
-            cmin=0,
-            cmax=float(np.percentile(g_dists, 95)),
-            colorbar=dict(title="km", thickness=12, len=0.6),
-            opacity=0.75,
-        ),
-        name="Distancia cobertura",
-        hovertemplate="Dist. más cercana: %{marker.color:.2f} km<extra></extra>",
-    ))
-
-    # Unidades públicas
-    fig_hm.add_trace(go.Scattermapbox(
-        lat=lats_p.tolist(), lon=lons_p.tolist(),
-        mode="markers",
-        marker=dict(size=5, color="#3498db", opacity=0.7),
-        name="Unidades públicas",
-        hoverinfo="skip",
-    ))
-
-    # Centros de huecos H₁ significativos — separados por tipo (interior / borde)
-    if n_sig > 0 and len(h1_centers) >= len(h1_p):
-        bd_p   = _border_dists(h1_centers[:len(h1_p)], pts_p)
-        sig_idx = np.where(h1_pers >= thresh)[0]
-        interior_c = [h1_centers[i] for i in sig_idx if i < len(h1_centers) and bd_p[i] >= eps_p]
-        borde_c    = [h1_centers[i] for i in sig_idx if i < len(h1_centers) and bd_p[i] <  eps_p]
-        if interior_c:
-            fig_hm.add_trace(go.Scattermapbox(
-                lat=[c[0] for c in interior_c],
-                lon=[c[1] for c in interior_c],
-                mode="markers+text",
-                marker=dict(size=14, color="#f39c12", opacity=0.95),
-                text=["✕"] * len(interior_c),
-                textfont=dict(size=13, color="white"),
-                name=f"Hueco interior (≥{thresh}km)",
-                hovertemplate="Hueco interior significativo<extra></extra>",
-            ))
-        if borde_c:
-            fig_hm.add_trace(go.Scattermapbox(
-                lat=[c[0] for c in borde_c],
-                lon=[c[1] for c in borde_c],
-                mode="markers+text",
-                marker=dict(size=14, color="#95a5a6", opacity=0.8),
-                text=["✕"] * len(borde_c),
-                textfont=dict(size=12, color="white"),
-                name="Posible artefacto de borde",
-                hovertemplate="Posible artefacto de borde<extra></extra>",
-            ))
-
-    fig_hm.update_layout(
-        mapbox=dict(
-            style="carto-positron",
-            center=dict(lat=float(lats_p.mean()), lon=float(lons_p.mean())),
-            zoom=11 if mun_p != "CDMX completa" else 10,
-        ),
-        height=520,
-        margin=dict(l=0, r=0, t=0, b=0),
-        legend=dict(bgcolor="rgba(255,255,255,0.85)", font=dict(size=11)),
-    )
-    st.plotly_chart(fig_hm, width="stretch")
-
-    st.divider()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # E. INTERPRETACIÓN
-    # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("E · Interpretación: Conectividad, Cobertura e Implicaciones")
+    st.subheader("D · Interpretación: Conectividad, Cobertura e Implicaciones")
 
     # Rezago en zonas sin cobertura
     if mun_p == "CDMX completa":
@@ -1637,7 +1550,7 @@ with tab_persist:
             fig_dist = px.bar(
                 df_dist_rez, x="Rezago", y="Distancia media (km)",
                 color="Rezago", color_discrete_map=COLORS,
-                title="Distancia media a unidad pública por grado de rezago",
+                title=f"Distancia media a unidad {sector_p.lower()} por grado de rezago",
                 labels={"Rezago": "", "Distancia media (km)": "km promedio"},
                 height=380,
             )
@@ -1658,7 +1571,7 @@ with tab_persist:
 
         st.info(
             f"**Resumen de hallazgos topológicos y sociales**\n\n"
-            f"- La red de salud pública analizda presenta **{n_sig} huecos H₁ persistentes** "
+            f"- La red de salud {sector_p.lower()} analizada presenta **{n_sig} huecos H₁ persistentes** "
             f"(persistencia ≥ {thresh} km), que representan zonas sin cobertura estructuralmente relevantes.\n"
             f"- El número máximo de huecos simultáneos (β₁) ocurre a **ε ≈ {peak_eps_val:.2f} km**, "
             f"indicando que ese es el radio crítico de análisis.\n"
