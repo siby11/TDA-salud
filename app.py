@@ -2831,8 +2831,7 @@ como K-Means o análisis de buffer no detectan.
 
 El complejo de Vietoris-Rips construye una representación del espacio de cobertura
 que crece con el radio ε. Cuando ese espacio presenta **agujeros persistentes** (H₁),
-indica zonas rodeadas de servicios pero sin cobertura directa: no son zonas aisladas,
-sino **bolsas de exclusión dentro de una red aparentemente densa**.
+indica zonas rodeadas de servicios pero sin cobertura directa**.
 
 La persistencia homológica mide cuánto "sobrevive" cada hueco al aumentar ε.
 Una alta persistencia indica que la brecha es estructural, no un artefacto del muestreo.
