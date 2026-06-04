@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -14,7 +15,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Paleta / estilo ────────────────────────────────────────────────────────────
+
 COLORS = {
     "Muy bajo":  "#2ecc71",
     "Bajo":      "#a8e6a3",
@@ -26,7 +27,6 @@ COLORS = {
     "No gubernamental": "#9b59b6",
 }
 
-# IDS invertido: Muy alto = mejor situación = verde, Muy bajo = peor = rojo
 COLORS_IDS = {
     "Muy bajo":  "#c0392b",
     "Bajo":      "#f0854f",
@@ -35,7 +35,7 @@ COLORS_IDS = {
     "Muy alto":  "#2ecc71",
 }
 
-# Mapa clave AGEB → nombre alcaldía (CDMX, entidad 09)
+# Mapa clave AGEB 
 MUN_MAP = {
     "002": "Azcapotzalco",        "003": "Coyoacán",
     "004": "Cuajimalpa de Morelos","005": "Gustavo A. Madero",
@@ -88,7 +88,7 @@ def _barcode_fig(dgm: np.ndarray, title: str, color: str, max_eps: float):
     births = dgm[:, 0]
     deaths = np.where(np.isinf(dgm[:, 1]), max_eps * 1.05, dgm[:, 1])
     pers = deaths - births
-    order = np.argsort(pers)          # menor a mayor persistencia = orden visual
+    order = np.argsort(pers)        
     x_seg, y_seg = [], []
     for rank, idx in enumerate(order):
         x_seg += [float(births[idx]), float(deaths[idx]), None]
@@ -160,48 +160,6 @@ def _compute_tda_full(pts_key: tuple):
                     float(pts[list(verts), 1].mean()),
                 ))
     return dgms_serial, D.tolist(), h1_centers
-
-@st.cache_data
-def _compute_grid_coverage(pub_key: tuple, lat0, lat1, lon0, lon1, n: int = 55):
-    """Grilla de distancia al punto público más cercano (km)."""
-    pub  = np.array(pub_key)
-    lats = np.linspace(lat0, lat1, n)
-    lons = np.linspace(lon0, lon1, n)
-    gx, gy = np.meshgrid(lons, lats)
-    grid = np.column_stack([gy.ravel(), gx.ravel()])
-    D    = _dist_cross_km(pub, grid)
-    return grid[:, 0].tolist(), grid[:, 1].tolist(), D.min(axis=0).tolist()
-
-def _dist_pt_seg(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
-    """Distancia mínima del punto p al segmento a–b."""
-    ab = b - a
-    t  = np.dot(p - a, ab) / (np.dot(ab, ab) + 1e-12)
-    return float(np.linalg.norm(p - (a + np.clip(t, 0, 1) * ab)))
-
-def _border_dists(centers: list, pts_deg: np.ndarray) -> np.ndarray:
-    """
-    Distancia (km) de cada centro de hueco H₁ al borde del casco convexo
-    de pts_deg (lat/lon en grados). Usa proyección plana local.
-    """
-    from scipy.spatial import ConvexHull
-    if len(pts_deg) < 4 or len(centers) == 0:
-        return np.zeros(len(centers))
-    lat0     = pts_deg[:, 0].mean()
-    LAT_KM   = 111.0
-    LON_KM   = 111.0 * np.cos(np.radians(lat0))
-    pts_km   = np.column_stack([pts_deg[:, 0] * LAT_KM, pts_deg[:, 1] * LON_KM])
-    try:
-        hull     = ConvexHull(pts_km)
-        hverts   = pts_km[hull.vertices]
-        n        = len(hverts)
-        dists    = []
-        for lat, lon in centers:
-            p = np.array([lat * LAT_KM, lon * LON_KM])
-            d = min(_dist_pt_seg(p, hverts[i], hverts[(i + 1) % n]) for i in range(n))
-            dists.append(d)
-        return np.array(dists)
-    except Exception:
-        return np.zeros(len(centers))
 
 def _dist_pt_seg(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
     """Distancia mínima del punto p al segmento a–b (en coords locales km)."""
@@ -335,9 +293,9 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
-tab_datos, tab_complejos, tab_persist, tab_prior, tab_report, tab_compare, tab_concl = st.tabs([
+tab_datos, tab_complejos, tab_persist, tab_prior, tab_report, tab_concl = st.tabs([
     "Datos", "Complejos Simpliciales", "Persistencia Homológica",
-    "Priorización de Huecos", "Hallazgos", "Comparación TDA vs K-Means",
+    "Priorización de Huecos", "Hallazgos",
     "Conclusiones y Estrategia",
 ])
 
@@ -934,7 +892,7 @@ with tab_complejos:
     with cc2:
         eps = st.slider(
             "Radio ε (km) — radio de cada círculo",
-            min_value=0.25, max_value=8.0, value=1.5, step=0.25,
+            min_value=0.25, max_value=8.0, value=1.5, step=0.01,
         )
     with cc3:
         show_rezago_layer = st.toggle("Mostrar capa de rezago AGEBs", value=True)
@@ -1300,7 +1258,7 @@ with tab_persist:
     n_univ_p = len(pub_p)
     if n_univ_p > max_pts_p:
         pub_p = pub_p.sample(max_pts_p, random_state=42)
-        st.caption(f"⚠️ Muestra de {max_pts_p} de {n_univ_p} unidades.")
+        st.caption(f" Muestra de {max_pts_p} de {n_univ_p} unidades.")
 
     pts_p  = pub_p[["latitud", "longitud"]].values
     if len(pts_p) < 5:
@@ -1478,12 +1436,12 @@ with tab_persist:
             }).sort_values("Persistencia (km)", ascending=False).head(15).reset_index(drop=True)
             df_h1_tab.index += 1
             df_h1_tab["Tipo"] = df_h1_tab.apply(
-                lambda r: ("✓ Interior" if r["Dist. borde (km)"] >= eps_p else "⚠️ Borde")
+                lambda r: ("✓ Interior" if r["Dist. borde (km)"] >= eps_p else " Borde")
                           if r["Persistencia (km)"] >= thresh else "",
                 axis=1,
             )
             st.dataframe(df_h1_tab, use_container_width=True, height=340)
-            st.caption("⚠️ Borde = hueco cerca del límite del área analizada; puede ser artefacto por efecto de frontera.")
+            st.caption(" Borde = hueco cerca del límite del área analizada; puede ser artefacto por efecto de frontera.")
         else:
             st.info("Sin features H₁ en la selección actual.")
 
@@ -1609,7 +1567,7 @@ with tab_prior:
         )
         subsec_pr = st.selectbox("Subsector público", subsec_opts_pr, key="subsec_pr")
     with pr3:
-        eps_pr    = st.slider("Radio ε (km)", 0.25, 8.0, 1.5, 0.25, key="eps_pr")
+        eps_pr    = st.slider("Radio ε (km)", 0.25, 8.0, 1.5, 0.01, key="eps_pr")
     with pr4:
         thresh_pr = st.slider("Umbral persist. (km)", 0.1, 3.0, 0.5, 0.1, key="thresh_pr")
 
@@ -2307,7 +2265,7 @@ with tab_report:
             f"({100 - pct_cov_r:.1f}% del total analizado)."
         ),
         (
-            "⚠️ Rezago y cobertura",
+            " Rezago y cobertura",
             f"El grado de rezago más frecuente entre las AGEBs sin cobertura es **{top_rez_r}**. "
             f"Las AGEBs con rezago **{max_dist_rez_r}** tienen la mayor distancia media al servicio público más cercano."
         ),
@@ -2327,10 +2285,11 @@ with tab_report:
     ]
 
     for icon_title, texto in hallazgos:
+        texto_html = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', texto)
         st.markdown(
             f"<div style='background:#f9f9f9;border-left:4px solid #4e8df5;"
             f"padding:10px 14px;border-radius:4px;margin-bottom:8px'>"
-            f"<b>{icon_title}</b><br>{texto}</div>",
+            f"<b>{icon_title}</b><br>{texto_html}</div>",
             unsafe_allow_html=True,
         )
 
@@ -2386,10 +2345,11 @@ with tab_report:
     for i, rec in enumerate(recomendaciones):
         c = rec_colors[i % len(rec_colors)]
         b = rec_borders[i % len(rec_borders)]
+        rec_html = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', rec)
         st.markdown(
             f"<div style='background:{c};border-left:4px solid {b};"
             f"padding:10px 14px;border-radius:4px;margin-bottom:8px'>"
-            f"<b>R{i+1}.</b> {rec}</div>",
+            f"<b>R{i+1}.</b> {rec_html}</div>",
             unsafe_allow_html=True,
         )
 
@@ -2438,407 +2398,409 @@ with tab_report:
         mime="text/markdown",
     )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TAB COMPARACIÓN — TDA vs K-MEANS + PCA
-# ═══════════════════════════════════════════════════════════════════════════════
-with tab_compare:
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.decomposition import PCA
-    from sklearn.cluster import KMeans
+# # ═══════════════════════════════════════════════════════════════════════════════
+# # TAB COMPARACIÓN — TDA vs K-MEANS + PCA
+# # ═══════════════════════════════════════════════════════════════════════════════
+# with tab_compare:
+#     from sklearn.preprocessing import StandardScaler
+#     from sklearn.decomposition import PCA
+#     from sklearn.cluster import KMeans
 
-    st.header("Comparación: TDA vs K-Means + PCA")
-    st.caption(
-        "K-Means agrupa AGEBs por similitud de atributos socioeconómicos. "
-        "TDA detecta vacíos estructurales en la red de cobertura. "
-        "Aquí contrastamos ambas perspectivas sobre el mismo territorio."
-    )
+#     st.header("Comparación: TDA vs K-Means + PCA")
+#     st.caption(
+#         "K-Means agrupa AGEBs por similitud de atributos socioeconómicos. "
+#         "TDA detecta vacíos estructurales en la red de cobertura. "
+#         "Aquí contrastamos ambas perspectivas sobre el mismo territorio."
+#     )
 
-    # ── Controles ─────────────────────────────────────────────────────────────
-    cmp1, cmp2, cmp3, cmp4 = st.columns([2, 2, 1, 1])
-    with cmp1:
-        mun_cmp = st.selectbox(
-            "Alcaldía",
-            ["CDMX completa"] + sorted(denue["municipio"].unique().tolist()),
-            key="mun_cmp",
-        )
-    with cmp2:
-        subsec_opts_cmp = ["Todos los subsectores"] + sorted(
-            denue[denue["sector"] == "Público"]["subsector"].dropna().unique().tolist()
-        )
-        subsec_cmp = st.selectbox("Subsector público", subsec_opts_cmp, key="subsec_cmp")
-    with cmp3:
-        k_cmp = st.slider("K (clusters)", 2, 8, 4, key="k_cmp")
-    with cmp4:
-        eps_cmp = st.slider("ε TDA (km)", 0.25, 8.0, 1.5, 0.25, key="eps_cmp")
+#     # ── Controles ─────────────────────────────────────────────────────────────
+#     cmp1, cmp2, cmp3, cmp4, cmp5 = st.columns([2, 2, 1, 1, 1])
+#     with cmp1:
+#         mun_cmp = st.selectbox(
+#             "Alcaldía",
+#             ["CDMX completa"] + sorted(denue["municipio"].unique().tolist()),
+#             key="mun_cmp",
+#         )
+#     with cmp2:
+#         subsec_opts_cmp = ["Todos los subsectores"] + sorted(
+#             denue[denue["sector"] == "Público"]["subsector"].dropna().unique().tolist()
+#         )
+#         subsec_cmp = st.selectbox("Subsector público", subsec_opts_cmp, key="subsec_cmp")
+#     with cmp3:
+#         k_cmp = st.slider("K (clusters)", 2, 8, 4, key="k_cmp")
+#     with cmp4:
+#         eps_cmp = st.slider("ε TDA (km)", 0.25, 8.0, 1.5, 0.25, key="eps_cmp")
+#     with cmp5:
+#         thresh_cmp = st.slider("Umbral sig. (km)", 0.1, 3.0, 0.5, 0.1, key="thresh_cmp")
 
-    # ── Preparar datos ─────────────────────────────────────────────────────────
-    # 1. AGEBs con variables socioeconómicas
-    ageb_cmp = coneval.merge(
-        ids[["cvegeo", "ids_norm", "grado_ids_num"]], on="cvegeo", how="left"
-    ).dropna(subset=["centroide_lat", "centroide_lon", "rezago_norm"])
+#     # ── Preparar datos ─────────────────────────────────────────────────────────
+#     # 1. AGEBs con variables socioeconómicas
+#     ageb_cmp = coneval.merge(
+#         ids[["cvegeo", "ids_norm", "grado_ids_num"]], on="cvegeo", how="left"
+#     ).dropna(subset=["centroide_lat", "centroide_lon", "rezago_norm"])
 
-    if mun_cmp != "CDMX completa":
-        _cve_cmp = ageb_cmp["cvegeo"].astype(str).str[2:5]
-        ageb_cmp = ageb_cmp[_cve_cmp == MUN_INV.get(mun_cmp, "000")]
+#     if mun_cmp != "CDMX completa":
+#         _cve_cmp = ageb_cmp["cvegeo"].astype(str).str[2:5]
+#         ageb_cmp = ageb_cmp[_cve_cmp == MUN_INV.get(mun_cmp, "000")]
 
-    # 2. Unidades públicas filtradas
-    pub_cmp = denue[denue["sector"] == "Público"].dropna(subset=["latitud", "longitud"])
-    if mun_cmp != "CDMX completa":
-        pub_cmp = pub_cmp[pub_cmp["municipio"] == mun_cmp]
-    if subsec_cmp != "Todos los subsectores":
-        pub_cmp = pub_cmp[pub_cmp["subsector"] == subsec_cmp]
+#     # 2. Unidades públicas filtradas
+#     pub_cmp = denue[denue["sector"] == "Público"].dropna(subset=["latitud", "longitud"])
+#     if mun_cmp != "CDMX completa":
+#         pub_cmp = pub_cmp[pub_cmp["municipio"] == mun_cmp]
+#     if subsec_cmp != "Todos los subsectores":
+#         pub_cmp = pub_cmp[pub_cmp["subsector"] == subsec_cmp]
 
-    # 3. Distancia AGEB → unidad pública más cercana
-    ageb_cmp = ageb_cmp.copy()
-    if len(ageb_cmp) > 0 and len(pub_cmp) > 0:
-        _ageb_pts  = ageb_cmp[["centroide_lat", "centroide_lon"]].values
-        _pub_pts   = pub_cmp[["latitud", "longitud"]].values
-        _D_ap      = _dist_cross_km(_ageb_pts, _pub_pts)
-        ageb_cmp["dist_nearest"] = _D_ap.min(axis=1)
-    else:
-        ageb_cmp["dist_nearest"] = 0.0
+#     # 3. Distancia AGEB → unidad pública más cercana
+#     ageb_cmp = ageb_cmp.copy()
+#     if len(ageb_cmp) > 0 and len(pub_cmp) > 0:
+#         _ageb_pts  = ageb_cmp[["centroide_lat", "centroide_lon"]].values
+#         _pub_pts   = pub_cmp[["latitud", "longitud"]].values
+#         _D_ap      = _dist_cross_km(_ageb_pts, _pub_pts)
+#         ageb_cmp["dist_nearest"] = _D_ap.min(axis=1)
+#     else:
+#         ageb_cmp["dist_nearest"] = 0.0
 
-    # 4. Matriz de características y limpieza
-    _feat_cols = ["centroide_lat", "centroide_lon", "rezago_norm", "ids_norm", "dist_nearest"]
-    ageb_feat = ageb_cmp.dropna(subset=_feat_cols).reset_index(drop=True)
+#     # 4. Matriz de características y limpieza
+#     _feat_cols = ["centroide_lat", "centroide_lon", "rezago_norm", "ids_norm", "dist_nearest"]
+#     ageb_feat = ageb_cmp.dropna(subset=_feat_cols).reset_index(drop=True)
 
-    if len(ageb_feat) < 10:
-        st.warning("Pocos AGEBs con este filtro. Amplía la selección.")
-        st.stop()
+#     if len(ageb_feat) < 10:
+#         st.warning("Pocos AGEBs con este filtro. Amplía la selección.")
+#         st.stop()
 
-    X_raw = ageb_feat[_feat_cols].values
-    _scaler = StandardScaler()
-    Xs = _scaler.fit_transform(X_raw)
+#     X_raw = ageb_feat[_feat_cols].values
+#     _scaler = StandardScaler()
+#     Xs = _scaler.fit_transform(X_raw)
 
-    # 5. PCA
-    _n_comp = min(5, Xs.shape[1])
-    _pca = PCA(n_components=_n_comp, random_state=42)
-    Xpca = _pca.fit_transform(Xs)
+#     # 5. PCA
+#     _n_comp = min(5, Xs.shape[1])
+#     _pca = PCA(n_components=_n_comp, random_state=42)
+#     Xpca = _pca.fit_transform(Xs)
 
-    # 6. K-Means con k seleccionado
-    _km = KMeans(n_clusters=k_cmp, random_state=42, n_init=10)
-    _km_labels = _km.fit_predict(Xs)
+#     # 6. K-Means con k seleccionado
+#     _km = KMeans(n_clusters=k_cmp, random_state=42, n_init=10)
+#     _km_labels = _km.fit_predict(Xs)
 
-    ageb_feat = ageb_feat.copy()
-    ageb_feat["km_cluster"] = [f"C{lb+1}" for lb in _km_labels]
-    ageb_feat["pc1"] = Xpca[:, 0]
-    ageb_feat["pc2"] = Xpca[:, 1]
+#     ageb_feat = ageb_feat.copy()
+#     ageb_feat["km_cluster"] = [f"C{lb+1}" for lb in _km_labels]
+#     ageb_feat["pc1"] = Xpca[:, 0]
+#     ageb_feat["pc2"] = Xpca[:, 1]
 
-    # 7. Curva del codo
-    _inertias = [
-        KMeans(n_clusters=ki, random_state=42, n_init=5).fit(Xs).inertia_
-        for ki in range(2, 9)
-    ]
+#     # 7. Curva del codo
+#     _inertias = [
+#         KMeans(n_clusters=ki, random_state=42, n_init=5).fit(Xs).inertia_
+#         for ki in range(2, 9)
+#     ]
 
-    # 8. TDA sobre unidades públicas (máx 2500, cached)
-    _pts_cmp = pub_cmp[["latitud", "longitud"]].values
-    if len(_pts_cmp) > 2500:
-        _pts_cmp = pub_cmp.sample(2500, random_state=42)[["latitud", "longitud"]].values
+#     # 8. TDA sobre unidades públicas (máx 2500, cached)
+#     _pts_cmp = pub_cmp[["latitud", "longitud"]].values
+#     if len(_pts_cmp) > 2500:
+#         _pts_cmp = pub_cmp.sample(2500, random_state=42)[["latitud", "longitud"]].values
 
-    _cluster_colors = px.colors.qualitative.Set2
+#     _cluster_colors = px.colors.qualitative.Set2
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # A. PCA
-    # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("A · Análisis de Componentes Principales (PCA)")
-    st.caption(
-        "5 variables por AGEB: ubicación geográfica (lat/lon), rezago social normalizado, "
-        "IDS normalizado y distancia a la unidad pública más cercana."
-    )
+#     # ══════════════════════════════════════════════════════════════════════════
+#     # A. PCA
+#     # ══════════════════════════════════════════════════════════════════════════
+#     st.subheader("A · Análisis de Componentes Principales (PCA)")
+#     st.caption(
+#         "5 variables por AGEB: ubicación geográfica (lat/lon), rezago social normalizado, "
+#         "IDS normalizado y distancia a la unidad pública más cercana."
+#     )
 
-    colA1, colA2 = st.columns(2)
+#     colA1, colA2 = st.columns(2)
 
-    with colA1:
-        _ev  = _pca.explained_variance_ratio_
-        _cev = np.cumsum(_ev)
-        fig_scree = go.Figure()
-        fig_scree.add_bar(
-            x=[f"PC{i+1}" for i in range(_n_comp)],
-            y=(_ev * 100).tolist(),
-            name="Varianza (%)", marker_color="#4e8df5",
-        )
-        fig_scree.add_scatter(
-            x=[f"PC{i+1}" for i in range(_n_comp)],
-            y=(_cev * 100).tolist(),
-            name="Acumulada (%)", mode="lines+markers",
-            line=dict(color="#e74c3c", width=2), marker=dict(size=7),
-        )
-        fig_scree.update_layout(
-            title="Varianza explicada por componente",
-            yaxis_title="% varianza", height=320,
-            legend=dict(orientation="h", y=-0.3),
-            margin=dict(t=40, b=50),
-        )
-        st.plotly_chart(fig_scree, width="stretch")
+#     with colA1:
+#         _ev  = _pca.explained_variance_ratio_
+#         _cev = np.cumsum(_ev)
+#         fig_scree = go.Figure()
+#         fig_scree.add_bar(
+#             x=[f"PC{i+1}" for i in range(_n_comp)],
+#             y=(_ev * 100).tolist(),
+#             name="Varianza (%)", marker_color="#4e8df5",
+#         )
+#         fig_scree.add_scatter(
+#             x=[f"PC{i+1}" for i in range(_n_comp)],
+#             y=(_cev * 100).tolist(),
+#             name="Acumulada (%)", mode="lines+markers",
+#             line=dict(color="#e74c3c", width=2), marker=dict(size=7),
+#         )
+#         fig_scree.update_layout(
+#             title="Varianza explicada por componente",
+#             yaxis_title="% varianza", height=320,
+#             legend=dict(orientation="h", y=-0.3),
+#             margin=dict(t=40, b=50),
+#         )
+#         st.plotly_chart(fig_scree, width="stretch")
 
-    with colA2:
-        _rezago_order = ["Muy bajo", "Bajo", "Medio", "Alto", "Muy alto"]
-        fig_pca = px.scatter(
-            ageb_feat, x="pc1", y="pc2",
-            color="grado_rezago_social",
-            color_discrete_map=COLORS,
-            category_orders={"grado_rezago_social": _rezago_order},
-            labels={"pc1": "PC1", "pc2": "PC2", "grado_rezago_social": "Rezago social"},
-            title="Biplot PC1 vs PC2 (color = rezago social)",
-            height=320, opacity=0.65,
-        )
-        fig_pca.update_traces(marker_size=5)
-        fig_pca.update_layout(margin=dict(t=40, b=20))
-        st.plotly_chart(fig_pca, width="stretch")
+#     with colA2:
+#         _rezago_order = ["Muy bajo", "Bajo", "Medio", "Alto", "Muy alto"]
+#         fig_pca = px.scatter(
+#             ageb_feat, x="pc1", y="pc2",
+#             color="grado_rezago_social",
+#             color_discrete_map=COLORS,
+#             category_orders={"grado_rezago_social": _rezago_order},
+#             labels={"pc1": "PC1", "pc2": "PC2", "grado_rezago_social": "Rezago social"},
+#             title="Biplot PC1 vs PC2 (color = rezago social)",
+#             height=320, opacity=0.65,
+#         )
+#         fig_pca.update_traces(marker_size=5)
+#         fig_pca.update_layout(margin=dict(t=40, b=20))
+#         st.plotly_chart(fig_pca, width="stretch")
 
-    with st.expander("Cargas (loadings) PCA"):
-        _feat_labels = ["Latitud", "Longitud", "Rezago norm.", "IDS norm.", "Dist. a unidad (km)"]
-        _df_loads = pd.DataFrame(
-            _pca.components_.T,
-            index=_feat_labels,
-            columns=[f"PC{i+1}" for i in range(_n_comp)],
-        ).round(3)
-        st.dataframe(_df_loads, width="stretch")
+#     with st.expander("Cargas (loadings) PCA"):
+#         _feat_labels = ["Latitud", "Longitud", "Rezago norm.", "IDS norm.", "Dist. a unidad (km)"]
+#         _df_loads = pd.DataFrame(
+#             _pca.components_.T,
+#             index=_feat_labels,
+#             columns=[f"PC{i+1}" for i in range(_n_comp)],
+#         ).round(3)
+#         st.dataframe(_df_loads, width="stretch")
 
-    st.divider()
+#     st.divider()
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # B. K-MEANS
-    # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("B · Clustering K-Means")
+#     # ══════════════════════════════════════════════════════════════════════════
+#     # B. K-MEANS
+#     # ══════════════════════════════════════════════════════════════════════════
+#     st.subheader("B · Clustering K-Means")
 
-    colB1, colB2 = st.columns([1, 2])
+#     colB1, colB2 = st.columns([1, 2])
 
-    with colB1:
-        fig_elbow = go.Figure(go.Scatter(
-            x=list(range(2, 9)), y=_inertias,
-            mode="lines+markers",
-            line=dict(color="#f39c12", width=2),
-            marker=dict(size=8, color="#f39c12"),
-        ))
-        fig_elbow.add_vline(
-            x=k_cmp, line_dash="dash", line_color="#e74c3c",
-            annotation_text=f"k={k_cmp}", annotation_position="top right",
-        )
-        fig_elbow.update_layout(
-            title="Codo (inercia vs k)",
-            xaxis_title="k", yaxis_title="Inercia",
-            height=260, margin=dict(t=40, b=20),
-        )
-        st.plotly_chart(fig_elbow, width="stretch")
+#     with colB1:
+#         fig_elbow = go.Figure(go.Scatter(
+#             x=list(range(2, 9)), y=_inertias,
+#             mode="lines+markers",
+#             line=dict(color="#f39c12", width=2),
+#             marker=dict(size=8, color="#f39c12"),
+#         ))
+#         fig_elbow.add_vline(
+#             x=k_cmp, line_dash="dash", line_color="#e74c3c",
+#             annotation_text=f"k={k_cmp}", annotation_position="top right",
+#         )
+#         fig_elbow.update_layout(
+#             title="Codo (inercia vs k)",
+#             xaxis_title="k", yaxis_title="Inercia",
+#             height=260, margin=dict(t=40, b=20),
+#         )
+#         st.plotly_chart(fig_elbow, width="stretch")
 
-        _prof_cols = {"rezago_norm": "Rezago", "ids_norm": "IDS", "dist_nearest": "Dist. (km)"}
-        _df_prof = (
-            ageb_feat.groupby("km_cluster")[list(_prof_cols.keys())]
-            .mean().round(3)
-            .rename(columns=_prof_cols)
-        )
-        _df_prof.index.name = "Cluster"
-        st.markdown("**Perfil medio por cluster**")
-        st.dataframe(_df_prof, width="stretch")
+#         _prof_cols = {"rezago_norm": "Rezago", "ids_norm": "IDS", "dist_nearest": "Dist. (km)"}
+#         _df_prof = (
+#             ageb_feat.groupby("km_cluster")[list(_prof_cols.keys())]
+#             .mean().round(3)
+#             .rename(columns=_prof_cols)
+#         )
+#         _df_prof.index.name = "Cluster"
+#         st.markdown("**Perfil medio por cluster**")
+#         st.dataframe(_df_prof, width="stretch")
 
-    with colB2:
-        fig_km_map = px.scatter_map(
-            ageb_feat,
-            lat="centroide_lat", lon="centroide_lon",
-            color="km_cluster",
-            color_discrete_sequence=_cluster_colors,
-            hover_data={"grado_rezago_social": True, "dist_nearest": ":.2f", "km_cluster": True},
-            labels={"km_cluster": "Cluster"},
-            title=f"Clusters K-Means (k={k_cmp}) — AGEBs CDMX",
-            zoom=10, height=420,
-        )
-        fig_km_map.update_layout(
-            map_style="carto-positron",
-            margin=dict(t=40, b=0, l=0, r=0),
-        )
-        st.plotly_chart(fig_km_map, width="stretch")
+#     with colB2:
+#         fig_km_map = px.scatter_map(
+#             ageb_feat,
+#             lat="centroide_lat", lon="centroide_lon",
+#             color="km_cluster",
+#             color_discrete_sequence=_cluster_colors,
+#             hover_data={"grado_rezago_social": True, "dist_nearest": ":.2f", "km_cluster": True},
+#             labels={"km_cluster": "Cluster"},
+#             title=f"Clusters K-Means (k={k_cmp}) — AGEBs CDMX",
+#             zoom=10, height=420,
+#         )
+#         fig_km_map.update_layout(
+#             map_style="carto-positron",
+#             margin=dict(t=40, b=0, l=0, r=0),
+#         )
+#         st.plotly_chart(fig_km_map, width="stretch")
 
-    st.divider()
+#     st.divider()
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # C. TDA — huecos H₁ sobre unidades públicas
-    # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("C · Huecos Topológicos TDA (H₁) sobre red pública")
+#     # ══════════════════════════════════════════════════════════════════════════
+#     # C. TDA — huecos H₁ sobre unidades públicas
+#     # ══════════════════════════════════════════════════════════════════════════
+#     st.subheader("C · Huecos Topológicos TDA (H₁) sobre red pública")
 
-    with st.spinner("Calculando TDA…"):
-        if len(_pts_cmp) >= 5:
-            _pts_cmp_key = tuple(map(tuple, _pts_cmp))
-            _dgms_cmp, _D_cmp_list, _h1c_raw = _compute_tda_full(_pts_cmp_key)
-            _D_cmp  = np.array(_D_cmp_list)
-            _h1_cmp = np.array(_dgms_cmp[1]) if len(_dgms_cmp[1]) else np.empty((0, 2))
-            _max_ec = min(float(_D_cmp.max()) if _D_cmp.size else 15.0, 15.0)
-            _h1p    = _h1_cmp[:, 1] - _h1_cmp[:, 0] if len(_h1_cmp) else np.array([])
-            _sig_c  = _h1p >= 0.5
-            _h1c_arr = np.array(_h1c_raw[:len(_h1_cmp)]) if len(_h1c_raw) else np.empty((0, 2))
-            _bd_c   = _border_dists(_h1c_arr, _pts_cmp) if len(_h1c_arr) else np.array([])
-            _int_c  = (_sig_c & (_bd_c >= eps_cmp)) if len(_bd_c) else _sig_c.copy()
-            _brd_c  = _sig_c & ~_int_c
-        else:
-            _h1_cmp  = np.empty((0, 2))
-            _h1c_arr = np.empty((0, 2))
-            _max_ec  = 8.0
-            _sig_c   = np.array([], dtype=bool)
-            _int_c   = np.array([], dtype=bool)
-            _brd_c   = np.array([], dtype=bool)
+#     with st.spinner("Calculando TDA…"):
+#         if len(_pts_cmp) >= 5:
+#             _pts_cmp_key = tuple(map(tuple, _pts_cmp))
+#             _dgms_cmp, _D_cmp_list, _h1c_raw = _compute_tda_full(_pts_cmp_key)
+#             _D_cmp  = np.array(_D_cmp_list)
+#             _h1_cmp = np.array(_dgms_cmp[1]) if len(_dgms_cmp[1]) else np.empty((0, 2))
+#             _max_ec = min(float(_D_cmp.max()) if _D_cmp.size else 15.0, 15.0)
+#             _h1p    = _h1_cmp[:, 1] - _h1_cmp[:, 0] if len(_h1_cmp) else np.array([])
+#             _sig_c  = _h1p >= thresh_cmp
+#             _h1c_arr = np.array(_h1c_raw[:len(_h1_cmp)]) if len(_h1c_raw) else np.empty((0, 2))
+#             _bd_c   = _border_dists(_h1c_arr, _pts_cmp) if len(_h1c_arr) else np.array([])
+#             _int_c  = (_sig_c & (_bd_c >= eps_cmp)) if len(_bd_c) else _sig_c.copy()
+#             _brd_c  = _sig_c & ~_int_c
+#         else:
+#             _h1_cmp  = np.empty((0, 2))
+#             _h1c_arr = np.empty((0, 2))
+#             _max_ec  = 8.0
+#             _sig_c   = np.array([], dtype=bool)
+#             _int_c   = np.array([], dtype=bool)
+#             _brd_c   = np.array([], dtype=bool)
 
-    _n_h1_c   = len(_h1_cmp)
-    _n_sig_c  = int(_sig_c.sum())
-    _n_int_c  = int(_int_c.sum())
+#     _n_h1_c   = len(_h1_cmp)
+#     _n_sig_c  = int(_sig_c.sum())
+#     _n_int_c  = int(_int_c.sum())
 
-    colC1, colC2 = st.columns([1, 2])
+#     colC1, colC2 = st.columns([1, 2])
 
-    with colC1:
-        st.metric("Huecos H₁ detectados", _n_h1_c)
-        st.metric("Significativos (pers. ≥ 0.5 km)", _n_sig_c)
-        st.metric("Interiores confirmados", _n_int_c,
-                  f"{_n_sig_c - _n_int_c} posibles artefactos de borde")
-        st.metric("Unidades públicas analizadas", len(_pts_cmp))
-        if _n_h1_c > 0:
-            _fig_bc = _barcode_fig(_h1_cmp, "Barcode H₁", "#e74c3c", _max_ec)
-            _fig_bc.update_layout(height=220, margin=dict(t=30, b=20))
-            st.plotly_chart(_fig_bc, width="stretch")
+#     with colC1:
+#         st.metric("Huecos H₁ detectados", _n_h1_c)
+#         st.metric("Significativos (pers. ≥ 0.5 km)", _n_sig_c)
+#         st.metric("Interiores confirmados", _n_int_c,
+#                   f"{_n_sig_c - _n_int_c} posibles artefactos de borde")
+#         st.metric("Unidades públicas analizadas", len(_pts_cmp))
+#         if _n_h1_c > 0:
+#             _fig_bc = _barcode_fig(_h1_cmp, "Barcode H₁", "#e74c3c", _max_ec)
+#             _fig_bc.update_layout(height=220, margin=dict(t=30, b=20))
+#             st.plotly_chart(_fig_bc, width="stretch")
 
-    with colC2:
-        # Mapa de AGEBs coloreadas por K-Means + huecos TDA superpuestos
-        fig_overlay = px.scatter_map(
-            ageb_feat,
-            lat="centroide_lat", lon="centroide_lon",
-            color="km_cluster",
-            color_discrete_sequence=_cluster_colors,
-            opacity=0.5,
-            hover_data={"grado_rezago_social": True, "dist_nearest": ":.2f"},
-            labels={"km_cluster": "Cluster K-Means"},
-            title=f"Clusters K-Means + huecos TDA (ε={eps_cmp} km)",
-            zoom=10, height=440,
-        )
-        if _n_int_c > 0:
-            _int_centers = _h1c_arr[_int_c]
-            fig_overlay.add_trace(go.Scattermap(
-                lat=_int_centers[:, 0].tolist(),
-                lon=_int_centers[:, 1].tolist(),
-                mode="markers",
-                marker=dict(size=18, color="#e74c3c", symbol="x"),
-                name="Hueco TDA interior",
-                hovertemplate=(
-                    "<b>Hueco H₁ interior</b><br>"
-                    "lat=%{lat:.4f}<br>lon=%{lon:.4f}<extra></extra>"
-                ),
-            ))
-        if int(_brd_c.sum()) > 0:
-            _brd_centers = _h1c_arr[_brd_c]
-            fig_overlay.add_trace(go.Scattermap(
-                lat=_brd_centers[:, 0].tolist(),
-                lon=_brd_centers[:, 1].tolist(),
-                mode="markers",
-                marker=dict(size=14, color="#aaa", symbol="x"),
-                name="Artefacto de borde",
-                hovertemplate=(
-                    "<b>Posible artefacto de borde</b><br>"
-                    "lat=%{lat:.4f}<br>lon=%{lon:.4f}<extra></extra>"
-                ),
-            ))
-        fig_overlay.update_layout(
-            map_style="carto-positron",
-            margin=dict(t=40, b=0, l=0, r=0),
-        )
-        st.plotly_chart(fig_overlay, width="stretch")
+#     with colC2:
+#         # Mapa de AGEBs coloreadas por K-Means + huecos TDA superpuestos
+#         fig_overlay = px.scatter_map(
+#             ageb_feat,
+#             lat="centroide_lat", lon="centroide_lon",
+#             color="km_cluster",
+#             color_discrete_sequence=_cluster_colors,
+#             opacity=0.5,
+#             hover_data={"grado_rezago_social": True, "dist_nearest": ":.2f"},
+#             labels={"km_cluster": "Cluster K-Means"},
+#             title=f"Clusters K-Means + huecos TDA (ε={eps_cmp} km)",
+#             zoom=10, height=440,
+#         )
+#         if _n_int_c > 0:
+#             _int_centers = _h1c_arr[_int_c]
+#             fig_overlay.add_trace(go.Scattermap(
+#                 lat=_int_centers[:, 0].tolist(),
+#                 lon=_int_centers[:, 1].tolist(),
+#                 mode="markers",
+#                 marker=dict(size=18, color="#e74c3c", symbol="x"),
+#                 name="Hueco TDA interior",
+#                 hovertemplate=(
+#                     "<b>Hueco H₁ interior</b><br>"
+#                     "lat=%{lat:.4f}<br>lon=%{lon:.4f}<extra></extra>"
+#                 ),
+#             ))
+#         if int(_brd_c.sum()) > 0:
+#             _brd_centers = _h1c_arr[_brd_c]
+#             fig_overlay.add_trace(go.Scattermap(
+#                 lat=_brd_centers[:, 0].tolist(),
+#                 lon=_brd_centers[:, 1].tolist(),
+#                 mode="markers",
+#                 marker=dict(size=14, color="#aaa", symbol="x"),
+#                 name="Artefacto de borde",
+#                 hovertemplate=(
+#                     "<b>Posible artefacto de borde</b><br>"
+#                     "lat=%{lat:.4f}<br>lon=%{lon:.4f}<extra></extra>"
+#                 ),
+#             ))
+#         fig_overlay.update_layout(
+#             map_style="carto-positron",
+#             margin=dict(t=40, b=0, l=0, r=0),
+#         )
+#         st.plotly_chart(fig_overlay, width="stretch")
 
-    st.divider()
+#     st.divider()
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # D. CONTRASTE — ¿Qué gana TDA?
-    # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("D · ¿Qué gana TDA sobre K-Means?")
+#     # ══════════════════════════════════════════════════════════════════════════
+#     # D. CONTRASTE — ¿Qué gana TDA?
+#     # ══════════════════════════════════════════════════════════════════════════
+#     st.subheader("D · ¿Qué gana TDA sobre K-Means?")
 
-    # Marcar AGEBs dentro del radio de algún hueco interior
-    ageb_feat = ageb_feat.copy()
-    if _n_int_c > 0:
-        _int_centers = _h1c_arr[_int_c]
-        _ageb_coords = ageb_feat[["centroide_lat", "centroide_lon"]].values
-        _D_hole      = _dist_cross_km(_ageb_coords, _int_centers)
-        ageb_feat["dist_to_hole"] = _D_hole.min(axis=1)
-        ageb_feat["en_hueco_tda"] = ageb_feat["dist_to_hole"] < eps_cmp
-    else:
-        ageb_feat["dist_to_hole"] = np.nan
-        ageb_feat["en_hueco_tda"] = False
+#     # Marcar AGEBs dentro del radio de algún hueco interior
+#     ageb_feat = ageb_feat.copy()
+#     if _n_int_c > 0:
+#         _int_centers = _h1c_arr[_int_c]
+#         _ageb_coords = ageb_feat[["centroide_lat", "centroide_lon"]].values
+#         _D_hole      = _dist_cross_km(_ageb_coords, _int_centers)
+#         ageb_feat["dist_to_hole"] = _D_hole.min(axis=1)
+#         ageb_feat["en_hueco_tda"] = ageb_feat["dist_to_hole"] < eps_cmp
+#     else:
+#         ageb_feat["dist_to_hole"] = np.nan
+#         ageb_feat["en_hueco_tda"] = False
 
-    colD1, colD2 = st.columns(2)
+#     colD1, colD2 = st.columns(2)
 
-    with colD1:
-        # Scatter PCA coloreado por K-Means; ✕ = AGEB dentro de hueco TDA
-        fig_contrast = px.scatter(
-            ageb_feat, x="pc1", y="pc2",
-            color="km_cluster",
-            color_discrete_sequence=_cluster_colors,
-            symbol="en_hueco_tda",
-            symbol_map={True: "x", False: "circle"},
-            labels={
-                "pc1": "PC1", "pc2": "PC2",
-                "km_cluster": "Cluster", "en_hueco_tda": "En hueco TDA",
-            },
-            title="Espacio PCA — clusters K-Means (✕ = dentro de hueco TDA)",
-            height=380, opacity=0.75,
-        )
-        fig_contrast.update_traces(marker_size=6)
-        fig_contrast.update_layout(margin=dict(t=40, b=20))
-        st.plotly_chart(fig_contrast, width="stretch")
+#     with colD1:
+#         # Scatter PCA coloreado por K-Means; ✕ = AGEB dentro de hueco TDA
+#         fig_contrast = px.scatter(
+#             ageb_feat, x="pc1", y="pc2",
+#             color="km_cluster",
+#             color_discrete_sequence=_cluster_colors,
+#             symbol="en_hueco_tda",
+#             symbol_map={True: "x", False: "circle"},
+#             labels={
+#                 "pc1": "PC1", "pc2": "PC2",
+#                 "km_cluster": "Cluster", "en_hueco_tda": "En hueco TDA",
+#             },
+#             title="Espacio PCA — clusters K-Means (✕ = dentro de hueco TDA)",
+#             height=380, opacity=0.75,
+#         )
+#         fig_contrast.update_traces(marker_size=6)
+#         fig_contrast.update_layout(margin=dict(t=40, b=20))
+#         st.plotly_chart(fig_contrast, width="stretch")
 
-    with colD2:
-        # Boxplot distancia a unidad pública por cluster
-        fig_box = px.box(
-            ageb_feat, x="km_cluster", y="dist_nearest",
-            color="km_cluster",
-            color_discrete_sequence=_cluster_colors,
-            points="outliers",
-            labels={"km_cluster": "Cluster", "dist_nearest": "Dist. a unidad pública (km)"},
-            title="Distancia a unidad pública por cluster K-Means",
-            height=380,
-        )
-        fig_box.update_layout(showlegend=False, margin=dict(t=40, b=20))
-        st.plotly_chart(fig_box, width="stretch")
+#     with colD2:
+#         # Boxplot distancia a unidad pública por cluster
+#         fig_box = px.box(
+#             ageb_feat, x="km_cluster", y="dist_nearest",
+#             color="km_cluster",
+#             color_discrete_sequence=_cluster_colors,
+#             points="outliers",
+#             labels={"km_cluster": "Cluster", "dist_nearest": "Dist. a unidad pública (km)"},
+#             title="Distancia a unidad pública por cluster K-Means",
+#             height=380,
+#         )
+#         fig_box.update_layout(showlegend=False, margin=dict(t=40, b=20))
+#         st.plotly_chart(fig_box, width="stretch")
 
-    # Tabla: huecos por cluster
-    if _n_int_c > 0:
-        _df_hc = ageb_feat.groupby("km_cluster")["en_hueco_tda"].agg(
-            en_hueco="sum", total="count"
-        ).reset_index()
-        _df_hc["% en hueco"] = (_df_hc["en_hueco"] / _df_hc["total"] * 100).round(1)
-        _df_hc.columns = ["Cluster", "AGEBs en hueco TDA", "Total AGEBs", "% en hueco"]
-        st.markdown("**AGEBs dentro de huecos topológicos por cluster K-Means**")
-        st.dataframe(_df_hc, width="stretch")
-        st.caption(
-            "Un hueco TDA puede cruzar varios clusters de K-Means, "
-            "demostrando que el vacío de cobertura es estructural y no depende del perfil socioeconómico."
-        )
+#     # Tabla: huecos por cluster
+#     if _n_int_c > 0:
+#         _df_hc = ageb_feat.groupby("km_cluster")["en_hueco_tda"].agg(
+#             en_hueco="sum", total="count"
+#         ).reset_index()
+#         _df_hc["% en hueco"] = (_df_hc["en_hueco"] / _df_hc["total"] * 100).round(1)
+#         _df_hc.columns = ["Cluster", "AGEBs en hueco TDA", "Total AGEBs", "% en hueco"]
+#         st.markdown("**AGEBs dentro de huecos topológicos por cluster K-Means**")
+#         st.dataframe(_df_hc, width="stretch")
+#         st.caption(
+#             "Un hueco TDA puede cruzar varios clusters de K-Means, "
+#             "demostrando que el vacío de cobertura es estructural y no depende del perfil socioeconómico."
+#         )
 
-    # Tabla comparativa de métodos
-    st.markdown("### Resumen: ¿qué detecta cada método?")
-    _cmp_df = pd.DataFrame({
-        "Método":                        ["K-Means",                                            "PCA",                                               "TDA (H₁)"],
-        "¿Qué detecta?":                 ["Grupos de AGEBs con perfil socioeconómico similar",  "Dimensiones latentes de variación territorial",     "Vacíos estructurales en la red de cobertura"],
-        "¿Detecta huecos de cobertura?": ["No",                                                 "No",                                                "Sí"],
-        "¿Usa topología espacial?":      ["Parcial (lat/lon como variable)",                    "No directamente",                                   "Sí (intrínsecamente)"],
-        "Parámetro clave":               [f"k = {k_cmp} clusters",                              f"{_n_comp} componentes",                            f"ε = {eps_cmp} km"],
-    })
-    st.dataframe(_cmp_df, width="stretch")
+#     # Tabla comparativa de métodos
+#     st.markdown("### ¿Qué detecta cada método?")
+#     _cmp_df = pd.DataFrame({
+#         "Método":                        ["K-Means",                                            "PCA",                                               "TDA (H₁)"],
+#         "¿Qué detecta?":                 ["Grupos de AGEBs con perfil socioeconómico similar",  "Dimensiones latentes de variación territorial",     "Vacíos estructurales en la red de cobertura"],
+#         "¿Detecta huecos de cobertura?": ["No",                                                 "No",                                                "Sí"],
+#         "¿Usa topología espacial?":      ["Parcial (lat/lon como variable)",                    "No directamente",                                   "Sí (intrínsecamente)"],
+#         "Parámetro clave":               [f"k = {k_cmp} clusters",                              f"{_n_comp} componentes",                            f"ε = {eps_cmp} km"],
+#     })
+#     st.dataframe(_cmp_df, width="stretch")
 
-    # Insight cards
-    _insights = [
-        ("#e8f5e9", "#2ecc71", "Lo que K-Means sí puede",
-         "Identificar territorios con perfiles similares de rezago, IDS y acceso. "
-         "Útil para priorizar zonas de alta vulnerabilidad socioeconómica y asignar recursos de manera eficiente."),
-        ("#fce4ec", "#e74c3c", "Lo que K-Means no puede",
-         "Detectar huecos topológicos en la red de servicios. Un cluster de baja vulnerabilidad "
-         "puede contener un vacío real de cobertura si la red de salud no conecta esa zona con ninguna unidad pública."),
-        ("#e3f2fd", "#3498db", f"El valor agregado de TDA ({_n_int_c} hueco{'s' if _n_int_c != 1 else ''} interior{'es' if _n_int_c != 1 else ''} confirmado{'s' if _n_int_c != 1 else ''})",
-         f"TDA identifica {_n_int_c} hueco{'s' if _n_int_c != 1 else ''} interior{'es' if _n_int_c != 1 else ''} confirmado{'s' if _n_int_c != 1 else ''} "
-         f"que representan zonas sin acceso estructural a salud pública independientemente del perfil "
-         f"socioeconómico del área. Estos vacíos trascienden los límites de los clusters de K-Means y "
-         f"sólo son visibles con análisis topológico."),
-    ]
-    for _bg, _bd, _title, _text in _insights:
-        st.markdown(
-            f"<div style='background:{_bg};border-left:4px solid {_bd};"
-            f"padding:10px 14px;border-radius:4px;margin-bottom:8px'>"
-            f"<b>{_title}</b><br>{_text}</div>",
-            unsafe_allow_html=True,
-        )
+#     # Insight cards
+#     _insights = [
+#         ("#e8f5e9", "#2ecc71", "Lo que K-Means sí puede",
+#          "Identificar territorios con perfiles similares de rezago, IDS y acceso. "
+#          "Útil para priorizar zonas de alta vulnerabilidad socioeconómica y asignar recursos de manera eficiente."),
+#         ("#fce4ec", "#e74c3c", "Lo que K-Means no puede",
+#          "Detectar huecos topológicos en la red de servicios. Un cluster de baja vulnerabilidad "
+#          "puede contener un vacío real de cobertura si la red de salud no conecta esa zona con ninguna unidad pública."),
+#         ("#e3f2fd", "#3498db", f"El valor agregado de TDA ({_n_int_c} hueco{'s' if _n_int_c != 1 else ''} interior{'es' if _n_int_c != 1 else ''} confirmado{'s' if _n_int_c != 1 else ''})",
+#          f"TDA identifica {_n_int_c} hueco{'s' if _n_int_c != 1 else ''} interior{'es' if _n_int_c != 1 else ''} confirmado{'s' if _n_int_c != 1 else ''} "
+#          f"que representan zonas sin acceso estructural a salud pública independientemente del perfil "
+#          f"socioeconómico del área. Estos vacíos trascienden los límites de los clusters de K-Means y "
+#          f"sólo son visibles con análisis topológico."),
+#     ]
+#     for _bg, _bd, _title, _text in _insights:
+#         st.markdown(
+#             f"<div style='background:{_bg};border-left:4px solid {_bd};"
+#             f"padding:10px 14px;border-radius:4px;margin-bottom:8px'>"
+#             f"<b>{_title}</b><br>{_text}</div>",
+#             unsafe_allow_html=True,
+#         )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB CONCLUSIONES Y ESTRATEGIA
