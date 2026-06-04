@@ -1447,99 +1447,99 @@ with tab_persist:
 
     st.divider()
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # D. INTERPRETACIÓN
-    # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("D · Interpretación: Conectividad, Cobertura e Implicaciones")
+    # # ══════════════════════════════════════════════════════════════════════════
+    # # D. INTERPRETACIÓN
+    # # ══════════════════════════════════════════════════════════════════════════
+    # st.subheader("D · Interpretación: Conectividad, Cobertura e Implicaciones")
 
-    # Rezago en zonas sin cobertura
-    if mun_p == "CDMX completa":
-        coneval_p = coneval
-    else:
-        cve_p = coneval["cvegeo"].astype(str).str[2:5]
-        coneval_p = coneval[cve_p == MUN_INV.get(mun_p, "000")]
+    # # Rezago en zonas sin cobertura
+    # if mun_p == "CDMX completa":
+    #     coneval_p = coneval
+    # else:
+    #     cve_p = coneval["cvegeo"].astype(str).str[2:5]
+    #     coneval_p = coneval[cve_p == MUN_INV.get(mun_p, "000")]
 
-    ageb_p = coneval_p.dropna(subset=["centroide_lat", "centroide_lon"])
-    ageb_pts_p = ageb_p[["centroide_lat", "centroide_lon"]].values
+    # ageb_p = coneval_p.dropna(subset=["centroide_lat", "centroide_lon"])
+    # ageb_pts_p = ageb_p[["centroide_lat", "centroide_lon"]].values
 
-    if len(ageb_pts_p) > 0 and len(pts_p) > 0:
-        md_p = np.array(_compute_coverage(pts_p_key, tuple(map(tuple, ageb_pts_p))))
-        ageb_p = ageb_p.copy()
-        ageb_p["dist_min"] = md_p
-        ageb_p["cobertura"] = np.where(md_p <= eps_p, "Cubierta", "Sin cobertura")
-        pct_p = float((md_p <= eps_p).mean() * 100)
-        n_unc_p = int((md_p > eps_p).sum())
+    # if len(ageb_pts_p) > 0 and len(pts_p) > 0:
+    #     md_p = np.array(_compute_coverage(pts_p_key, tuple(map(tuple, ageb_pts_p))))
+    #     ageb_p = ageb_p.copy()
+    #     ageb_p["dist_min"] = md_p
+    #     ageb_p["cobertura"] = np.where(md_p <= eps_p, "Cubierta", "Sin cobertura")
+    #     pct_p = float((md_p <= eps_p).mean() * 100)
+    #     n_unc_p = int((md_p > eps_p).sum())
 
-        col_int1, col_int2 = st.columns(2)
+    #     col_int1, col_int2 = st.columns(2)
 
-        with col_int1:
-            # Rezago: cubierta vs sin cobertura
-            rez_ord = ["Muy bajo", "Bajo", "Medio", "Alto", "Muy alto"]
-            df_int = (
-                ageb_p.groupby(["cobertura", "grado_rezago_social"])
-                .size().reset_index(name="n")
-            )
-            df_int["grado_rezago_social"] = pd.Categorical(
-                df_int["grado_rezago_social"], categories=rez_ord, ordered=True
-            )
-            # Normalizar a porcentaje dentro de cada grupo
-            totals = df_int.groupby("cobertura")["n"].transform("sum")
-            df_int["pct"] = (df_int["n"] / totals * 100).round(1)
-            fig_int = px.bar(
-                df_int.sort_values("grado_rezago_social"),
-                x="grado_rezago_social", y="pct", color="cobertura",
-                color_discrete_map={"Cubierta": "#2ecc71", "Sin cobertura": "#e74c3c"},
-                barmode="group",
-                title=f"Rezago social: % dentro de AGEBs cubiertas vs sin cobertura (ε={eps_p}km)",
-                labels={"grado_rezago_social": "Rezago", "pct": "% de AGEBs en grupo", "cobertura": ""},
-                height=380,
-            )
-            fig_int.update_layout(margin=dict(l=0, r=0, t=40, b=0))
-            st.plotly_chart(fig_int, width="stretch")
+    #     with col_int1:
+    #         # Rezago: cubierta vs sin cobertura
+    #         rez_ord = ["Muy bajo", "Bajo", "Medio", "Alto", "Muy alto"]
+    #         df_int = (
+    #             ageb_p.groupby(["cobertura", "grado_rezago_social"])
+    #             .size().reset_index(name="n")
+    #         )
+    #         df_int["grado_rezago_social"] = pd.Categorical(
+    #             df_int["grado_rezago_social"], categories=rez_ord, ordered=True
+    #         )
+    #         # Normalizar a porcentaje dentro de cada grupo
+    #         totals = df_int.groupby("cobertura")["n"].transform("sum")
+    #         df_int["pct"] = (df_int["n"] / totals * 100).round(1)
+    #         fig_int = px.bar(
+    #             df_int.sort_values("grado_rezago_social"),
+    #             x="grado_rezago_social", y="pct", color="cobertura",
+    #             color_discrete_map={"Cubierta": "#2ecc71", "Sin cobertura": "#e74c3c"},
+    #             barmode="group",
+    #             title=f"Rezago social: % dentro de AGEBs cubiertas vs sin cobertura (ε={eps_p}km)",
+    #             labels={"grado_rezago_social": "Rezago", "pct": "% de AGEBs en grupo", "cobertura": ""},
+    #             height=380,
+    #         )
+    #         fig_int.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+    #         st.plotly_chart(fig_int, width="stretch")
 
-        with col_int2:
-            # Distancia media al servicio por grado de rezago
-            df_dist_rez = ageb_p.groupby("grado_rezago_social")["dist_min"].mean().reset_index()
-            df_dist_rez.columns = ["Rezago", "Distancia media (km)"]
-            df_dist_rez["Rezago"] = pd.Categorical(
-                df_dist_rez["Rezago"], categories=rez_ord, ordered=True
-            )
-            df_dist_rez = df_dist_rez.sort_values("Rezago")
-            fig_dist = px.bar(
-                df_dist_rez, x="Rezago", y="Distancia media (km)",
-                color="Rezago", color_discrete_map=COLORS,
-                title=f"Distancia media a unidad {sector_p.lower()} por grado de rezago",
-                labels={"Rezago": "", "Distancia media (km)": "km promedio"},
-                height=380,
-            )
-            fig_dist.update_layout(showlegend=False, margin=dict(l=0, r=0, t=40, b=0))
-            fig_dist.add_hline(y=eps_p, line_dash="dash", line_color="gray",
-                               annotation_text=f"ε={eps_p}km", annotation_position="right")
-            st.plotly_chart(fig_dist, width="stretch")
+    #     with col_int2:
+    #         # Distancia media al servicio por grado de rezago
+    #         df_dist_rez = ageb_p.groupby("grado_rezago_social")["dist_min"].mean().reset_index()
+    #         df_dist_rez.columns = ["Rezago", "Distancia media (km)"]
+    #         df_dist_rez["Rezago"] = pd.Categorical(
+    #             df_dist_rez["Rezago"], categories=rez_ord, ordered=True
+    #         )
+    #         df_dist_rez = df_dist_rez.sort_values("Rezago")
+    #         fig_dist = px.bar(
+    #             df_dist_rez, x="Rezago", y="Distancia media (km)",
+    #             color="Rezago", color_discrete_map=COLORS,
+    #             title=f"Distancia media a unidad {sector_p.lower()} por grado de rezago",
+    #             labels={"Rezago": "", "Distancia media (km)": "km promedio"},
+    #             height=380,
+    #         )
+    #         fig_dist.update_layout(showlegend=False, margin=dict(l=0, r=0, t=40, b=0))
+    #         fig_dist.add_hline(y=eps_p, line_dash="dash", line_color="gray",
+    #                            annotation_text=f"ε={eps_p}km", annotation_position="right")
+    #         st.plotly_chart(fig_dist, width="stretch")
 
         # Resumen narrativo dinámico
-        sinc_p  = ageb_p[ageb_p["cobertura"] == "Sin cobertura"]
-        top_r_p = sinc_p["grado_rezago_social"].value_counts().idxmax() if len(sinc_p) else "—"
-        max_dist_rez = df_dist_rez.loc[df_dist_rez["Distancia media (km)"].idxmax(), "Rezago"] if len(df_dist_rez) else "—"
+        # sinc_p  = ageb_p[ageb_p["cobertura"] == "Sin cobertura"]
+        # top_r_p = sinc_p["grado_rezago_social"].value_counts().idxmax() if len(sinc_p) else "—"
+        # max_dist_rez = df_dist_rez.loc[df_dist_rez["Distancia media (km)"].idxmax(), "Rezago"] if len(df_dist_rez) else "—"
 
-        if b1_curve.max() > 0:
-            peak_eps_val = float(eps_range[b1_curve.argmax()])
-        else:
-            peak_eps_val = 0.0
+        # if b1_curve.max() > 0:
+        #     peak_eps_val = float(eps_range[b1_curve.argmax()])
+        # else:
+        #     peak_eps_val = 0.0
 
-        st.info(
-            f"**Resumen de hallazgos topológicos y sociales**\n\n"
-            f"- La red de salud {sector_p.lower()} analizada presenta **{n_sig} huecos H₁ persistentes** "
-            f"(persistencia ≥ {thresh} km), que representan zonas sin cobertura estructuralmente relevantes.\n"
-            f"- El número máximo de huecos simultáneos (β₁) ocurre a **ε ≈ {peak_eps_val:.2f} km**, "
-            f"indicando que ese es el radio crítico de análisis.\n"
-            f"- A ε = {eps_p} km, el **{pct_p:.1f}%** de las AGEBs tienen cobertura; "
-            f"quedan **{n_unc_p} AGEBs sin cobertura**.\n"
-            f"- El grado de rezago más frecuente en AGEBs sin cobertura es **{top_r_p}**, "
-            f"y el rezago con mayor distancia media al servicio es **{max_dist_rez}**.\n"
-            f"- Esto sugiere que los huecos topológicos detectados no son aleatorios: "
-            f"se concentran en zonas de mayor vulnerabilidad social."
-        )
+        # st.info(
+        #     f"**Resumen de hallazgos topológicos y sociales**\n\n"
+        #     f"- La red de salud {sector_p.lower()} analizada presenta **{n_sig} huecos H₁ persistentes** "
+        #     f"(persistencia ≥ {thresh} km), que representan zonas sin cobertura estructuralmente relevantes.\n"
+        #     f"- El número máximo de huecos simultáneos (β₁) ocurre a **ε ≈ {peak_eps_val:.2f} km**, "
+        #     f"indicando que ese es el radio crítico de análisis.\n"
+        #     f"- A ε = {eps_p} km, el **{pct_p:.1f}%** de las AGEBs tienen cobertura; "
+        #     f"quedan **{n_unc_p} AGEBs sin cobertura**.\n"
+        #     f"- El grado de rezago más frecuente en AGEBs sin cobertura es **{top_r_p}**, "
+        #     f"y el rezago con mayor distancia media al servicio es **{max_dist_rez}**.\n"
+        #     f"- Esto sugiere que los huecos topológicos detectados no son aleatorios: "
+        #     f"se concentran en zonas de mayor vulnerabilidad social."
+        # )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB PRIORIZACIÓN DE HUECOS
