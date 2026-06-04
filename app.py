@@ -2854,16 +2854,7 @@ Una alta persistencia indica que la brecha es estructural, no un artefacto del m
         })
         st.dataframe(flujo, width="stretch")
 
-        st.markdown("""
-**Ventaja frente a métodos convencionales**
-
-| Pregunta | Buffer/Isócrona | K-Means | TDA |
-|---|---|---|---|
-| ¿Hay cobertura cerca? | Sí | No | Sí |
-| ¿Hay huecos estructurales? | No | No | **Sí** |
-| ¿Qué zonas priorizar? | Parcial | Parcial | **Sí, con índice** |
-| ¿Sensible a la topología? | No | No | **Sí** |
-        """)
+       
 
     st.divider()
 
