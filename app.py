@@ -1152,18 +1152,6 @@ with tab_complejos:
             "Una barra corta = ruido o irregularidad local."
         )
 
-    # Diagrama de persistencia
-    fig_pers = _persistence_fig(dgms, max_finite)
-    fig_pers.add_vline(x=eps, line_dash="dash", line_color="orange", opacity=0.5,
-                       annotation_text="ε", annotation_position="top right")
-    fig_pers.add_hline(y=eps, line_dash="dash", line_color="orange", opacity=0.5)
-    st.plotly_chart(fig_pers, width="stretch")
-    st.caption(
-        "Los puntos **alejados de la diagonal** son features topológicos significativos. "
-        "Rojo = H₀ (componentes), Azul = H₁ (huecos). "
-        "El tamaño del punto indica su persistencia."
-    )
-
     st.divider()
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1321,6 +1309,18 @@ with tab_persist:
     h1_sig  = h1_p[h1_pers >= thresh] if len(h1_p) else np.empty((0, 2))
     n_sig   = len(h1_sig)
 
+    # ── Estadísticas de vida de los huecos ────────────────────────────────────
+    h1_pers_fin = h1_pers[~np.isinf(h1_pers)] if len(h1_pers) else np.array([])
+    if len(h1_pers_fin) >= 2:
+        mu_pers    = float(h1_pers_fin.mean())
+        sigma_pers = float(h1_pers_fin.std())
+        thresh_sug = mu_pers + 0.5 * sigma_pers   # μ + ½σ como umbral estadístico
+        # Hueco representativo: el más cercano a la media
+        idx_repr   = int(np.argmin(np.abs(h1_pers_fin - mu_pers)))
+    else:
+        mu_pers = sigma_pers = thresh_sug = 0.0
+        idx_repr = 0
+
     # ── KPIs ──────────────────────────────────────────────────────────────────
     kp1, kp2, kp3, kp4 = st.columns(4)
     kp1.metric("Unidades analizadas", f"{len(pts_p):,}")
@@ -1330,6 +1330,17 @@ with tab_persist:
         kp4.metric("Persistencia H₁ máxima", f"{h1_pers.max():.2f} km")
     else:
         kp4.metric("Persistencia H₁ máxima", "—")
+
+    # ── KPIs estadísticos de vida ──────────────────────────────────────────────
+    if len(h1_pers_fin) >= 2:
+        sk1, sk2, sk3, sk4 = st.columns(4)
+        sk1.metric("Vida media H₁ (μ)", f"{mu_pers:.3f} km")
+        sk2.metric("Desv. estándar (σ)", f"{sigma_pers:.3f} km")
+        sk3.metric("Umbral sugerido (μ + ½σ)", f"{thresh_sug:.3f} km",
+                   delta=f"{'↑' if thresh_sug > thresh else '↓'} vs manual {thresh:.2f} km",
+                   delta_color="off")
+        sk4.metric("Hueco representativo", f"H₁ #{idx_repr + 1}",
+                   delta=f"persist. {h1_pers_fin[idx_repr]:.3f} km", delta_color="off")
 
     st.divider()
 
@@ -1364,12 +1375,60 @@ with tab_persist:
     # Diagonal (persistencia = 0, ruido)
     fig_pd.add_shape(type="line", x0=0, y0=0, x1=lim, y1=lim,
                      line=dict(color="gray", dash="dot", width=1))
-    # Umbral de significancia (persistencia = thresh)
+    # Umbral de significancia manual (persistencia = thresh)
     fig_pd.add_shape(type="line", x0=0, y0=thresh, x1=lim - thresh, y1=lim,
                      line=dict(color="#f39c12", dash="dash", width=1.5))
     # Línea ε referencia
     fig_pd.add_vline(x=eps_p, line_dash="dash", line_color="green", opacity=0.6,
                      annotation_text=f"ε={eps_p}km", annotation_position="top right")
+
+    if len(h1_pers_fin) >= 2:
+        # Línea de vida media μ (paralela a la diagonal, distancia = μ)
+        fig_pd.add_shape(type="line",
+                         x0=0, y0=mu_pers, x1=max(0, lim - mu_pers), y1=lim,
+                         line=dict(color="#9b59b6", dash="solid", width=1.5))
+        fig_pd.add_annotation(
+            x=lim * 0.55, y=lim * 0.55 + mu_pers,
+            text=f"μ = {mu_pers:.2f} km", showarrow=False,
+            font=dict(color="#9b59b6", size=11),
+            bgcolor="rgba(255,255,255,0.8)",
+        )
+        # Banda ±σ alrededor de μ (μ−σ a μ+σ)
+        lo = max(0, mu_pers - sigma_pers)
+        hi = mu_pers + sigma_pers
+        fig_pd.add_shape(type="rect",
+                         x0=0, y0=lo, x1=lim, y1=hi,
+                         fillcolor="rgba(155,89,182,0.08)",
+                         line=dict(width=0),
+                         layer="below")
+        # Línea umbral sugerido μ+½σ
+        fig_pd.add_shape(type="line",
+                         x0=0, y0=thresh_sug, x1=max(0, lim - thresh_sug), y1=lim,
+                         line=dict(color="#8e44ad", dash="dot", width=1.5))
+        fig_pd.add_annotation(
+            x=lim * 0.3, y=lim * 0.3 + thresh_sug,
+            text=f"Umbral sugerido μ+½σ = {thresh_sug:.2f} km",
+            showarrow=False, font=dict(color="#8e44ad", size=10),
+            bgcolor="rgba(255,255,255,0.8)",
+        )
+        # Punto representativo (hueco más cercano a μ)
+        if idx_repr < len(h1_p):
+            repr_b = float(h1_p[idx_repr, 0])
+            repr_d = float(h1_p[idx_repr, 1]) if not np.isinf(h1_p[idx_repr, 1]) else max_ep * 1.05
+            fig_pd.add_trace(go.Scatter(
+                x=[repr_b], y=[repr_d],
+                mode="markers",
+                marker=dict(size=18, color="#9b59b6", symbol="star",
+                            line=dict(color="white", width=1.5)),
+                name=f"Hueco representativo H₁ #{idx_repr + 1}",
+                hovertemplate=(
+                    f"<b>Hueco representativo</b><br>"
+                    f"Nacimiento: {repr_b:.3f} km<br>"
+                    f"Muerte: {repr_d:.3f} km<br>"
+                    f"Persistencia: {h1_pers_fin[idx_repr]:.3f} km (≈ μ)<extra></extra>"
+                ),
+            ))
+
     # Anotaciones de zonas
     fig_pd.add_annotation(x=lim * 0.08, y=lim * 0.97,
                           text="◀ Ruido (baja persistencia)", showarrow=False,
@@ -1381,9 +1440,146 @@ with tab_persist:
     st.plotly_chart(fig_pd, width="stretch")
     st.caption(
         "**Diagonal punteada gris** = persistencia cero (ruido). "
-        "**Línea naranja** = umbral de significancia. "
-        "Los puntos azules (H₁) alejados de la diagonal son **huecos topológicos reales**."
+        "**Línea naranja** = umbral manual. "
+        "**Línea morada sólida** = vida media μ. "
+        "**Línea morada punteada** = umbral sugerido μ+½σ. "
+        "**Banda morada** = rango μ±σ. "
+        "**Estrella morada** = hueco representativo (persistencia más cercana a μ)."
     )
+
+    # ── Vista combinada: diagrama H₁ etiquetado + mapa espacial ──────────────
+    n_c = min(len(h1_centers), len(h1_p))
+    if n_c > 0:
+        st.subheader("A.2 · Persistencia ↔ Localización Espacial de Huecos H₁")
+        st.caption(
+            "Izquierda: cada hueco H₁ etiquetado por número, tamaño y color según persistencia. "
+            "Derecha: localización aproximada en el mapa (centroide del cociclo). "
+            "Mismo número = mismo hueco en ambas vistas. ★ = hueco representativo (≈ μ)."
+        )
+
+        hole_lats_v = [h1_centers[i][0] for i in range(n_c)]
+        hole_lons_v = [h1_centers[i][1] for i in range(n_c)]
+        hole_pers_v = [
+            float(h1_pers[i]) if i < len(h1_pers) and not np.isinf(h1_pers[i]) else max_ep
+            for i in range(n_c)
+        ]
+        hole_labels_v = [f"H{i+1}" for i in range(n_c)]
+        births_v = [float(h1_p[i, 0]) for i in range(n_c)]
+        deaths_v = [
+            float(h1_p[i, 1]) if not np.isinf(h1_p[i, 1]) else max_ep * 1.05
+            for i in range(n_c)
+        ]
+        max_pv = max(hole_pers_v) if hole_pers_v else 1.0
+
+        col_diag, col_mapa = st.columns(2)
+
+        with col_diag:
+            fig_h1_lab = go.Figure()
+            # Diagonal
+            lim_v = max_ep * 1.05
+            fig_h1_lab.add_shape(type="line", x0=0, y0=0, x1=lim_v, y1=lim_v,
+                                 line=dict(color="gray", dash="dot", width=1))
+            # Umbral manual
+            fig_h1_lab.add_shape(type="line", x0=0, y0=thresh,
+                                 x1=max(0, lim_v - thresh), y1=lim_v,
+                                 line=dict(color="#f39c12", dash="dash", width=1))
+            # Todos los huecos H₁, coloreados por persistencia
+            fig_h1_lab.add_trace(go.Scatter(
+                x=births_v, y=deaths_v,
+                mode="markers+text",
+                text=hole_labels_v,
+                textposition="top right",
+                textfont=dict(size=8, color="#2d3436"),
+                marker=dict(
+                    size=[9 + 16 * (p / (max_pv + 1e-9)) for p in hole_pers_v],
+                    color=hole_pers_v,
+                    colorscale="RdYlGn_r",
+                    cmin=0, cmax=max_pv,
+                    colorbar=dict(title="Persist.<br>(km)", thickness=12, len=0.7,
+                                  x=1.01),
+                    showscale=True,
+                    line=dict(color="white", width=1),
+                    opacity=0.85,
+                ),
+                hovertemplate=(
+                    "<b>%{text}</b><br>"
+                    "Nac.: %{x:.3f} km · Muerte: %{y:.3f} km<br>"
+                    "Persist.: %{marker.color:.3f} km<extra></extra>"
+                ),
+                name="Huecos H₁",
+            ))
+            # Estrella representativo
+            if idx_repr < n_c:
+                fig_h1_lab.add_trace(go.Scatter(
+                    x=[births_v[idx_repr]], y=[deaths_v[idx_repr]],
+                    mode="markers",
+                    marker=dict(size=20, color="gold", symbol="star",
+                                line=dict(color="#8e44ad", width=2)),
+                    name=f"Repr. H{idx_repr+1}",
+                    hovertemplate=f"<b>Hueco representativo H{idx_repr+1}</b><br>"
+                                  f"Persist. ≈ μ = {mu_pers:.3f} km<extra></extra>",
+                ))
+            fig_h1_lab.update_layout(
+                xaxis_title="Nacimiento ε (km)", yaxis_title="Muerte ε (km)",
+                height=400, margin=dict(l=0, r=60, t=20, b=40),
+                legend=dict(font=dict(size=10), x=0, y=1),
+                showlegend=True,
+            )
+            st.plotly_chart(fig_h1_lab, width="stretch")
+
+        with col_mapa:
+            fig_hmap = go.Figure()
+            # Unidades de salud de fondo
+            fig_hmap.add_trace(go.Scattermapbox(
+                lat=pts_p[:, 0].tolist(), lon=pts_p[:, 1].tolist(),
+                mode="markers",
+                marker=dict(size=4, color="rgba(120,120,120,0.35)"),
+                name="Unidades salud",
+                hoverinfo="skip",
+            ))
+            # Huecos H₁ coloreados por persistencia
+            fig_hmap.add_trace(go.Scattermapbox(
+                lat=hole_lats_v, lon=hole_lons_v,
+                mode="markers+text",
+                text=hole_labels_v,
+                textfont=dict(size=8, color="black"),
+                marker=dict(
+                    size=[11 + 20 * (p / (max_pv + 1e-9)) for p in hole_pers_v],
+                    color=hole_pers_v,
+                    colorscale="RdYlGn_r",
+                    cmin=0, cmax=max_pv,
+                    colorbar=dict(title="Persist.<br>(km)", thickness=12, x=1.0),
+                    showscale=True,
+                    opacity=0.85,
+                ),
+                hovertemplate=(
+                    "<b>%{text}</b><br>Persist.: %{marker.color:.3f} km<extra></extra>"
+                ),
+                name="Huecos H₁",
+            ))
+            # Estrella representativo en mapa
+            if idx_repr < n_c:
+                fig_hmap.add_trace(go.Scattermapbox(
+                    lat=[hole_lats_v[idx_repr]], lon=[hole_lons_v[idx_repr]],
+                    mode="markers",
+                    marker=dict(size=22, color="gold"),
+                    name=f"Repr. H{idx_repr+1}",
+                    hovertemplate=f"<b>Hueco representativo H{idx_repr+1}</b><br>"
+                                  f"Persist. ≈ μ = {mu_pers:.3f} km<extra></extra>",
+                ))
+            ctr_lat = float(np.mean(hole_lats_v)) if hole_lats_v else 19.43
+            ctr_lon = float(np.mean(hole_lons_v)) if hole_lons_v else -99.13
+            fig_hmap.update_layout(
+                mapbox=dict(
+                    style="carto-positron",
+                    center=dict(lat=ctr_lat, lon=ctr_lon),
+                    zoom=10 if mun_p == "CDMX completa" else 11,
+                ),
+                height=400,
+                margin=dict(l=0, r=0, t=0, b=0),
+                legend=dict(bgcolor="rgba(255,255,255,0.85)", font=dict(size=10)),
+            )
+            st.plotly_chart(fig_hmap, width="stretch")
 
     st.divider()
 
