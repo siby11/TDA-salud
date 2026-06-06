@@ -293,10 +293,9 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
-tab_datos, tab_complejos, tab_persist, tab_prior, tab_report, tab_concl = st.tabs([
+tab_datos, tab_complejos, tab_persist, tab_prior, tab_concl = st.tabs([
     "Datos", "Complejos Simpliciales", "Persistencia Homológica",
-    "Priorización de Huecos", "Hallazgos",
-    "Conclusiones y Estrategia",
+    "Priorización de Huecos", "Conclusiones y Estrategia",
 ])
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2150,6 +2149,7 @@ del casco convexo de los puntos analizados; de lo contrario, puede ser un artefa
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB HALLAZGOS — REPORTE DINÁMICO
 # ═══════════════════════════════════════════════════════════════════════════════
+_hidden_tab_report = '''
 with tab_report:
 
     st.header("Reporte de Hallazgos Principales")
@@ -2653,6 +2653,8 @@ with tab_report:
         file_name=f"reporte_tda_{mun_r.replace(' ','_').lower()}_{date.today()}.md",
         mime="text/markdown",
     )
+
+'''
 
 # # ═══════════════════════════════════════════════════════════════════════════════
 # # TAB COMPARACIÓN — TDA vs K-MEANS + PCA
