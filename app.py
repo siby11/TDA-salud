@@ -1645,9 +1645,10 @@ with tab_persist:
     # ══════════════════════════════════════════════════════════════════════════
     st.subheader("C · Análisis de Features Persistentes")
 
-    col_hist, col_tab = st.columns([3, 2])
+    col_tab = st.container()
 
-    with col_hist:
+    _hidden_tab_persist = '''
+    with st.container():
         # Histograma de persistencia
         rows_hist = []
         for b, d in h0_p:
@@ -1674,6 +1675,8 @@ with tab_persist:
             "Las barras a la **izquierda del umbral** son ruido topológico. "
             "Las barras a la **derecha** representan estructuras reales (huecos, clusters aislados)."
         )
+
+    '''
 
     with col_tab:
         st.markdown("**Top huecos H₁ por persistencia**")
