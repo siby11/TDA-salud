@@ -1169,6 +1169,7 @@ with tab_complejos:
     # ══════════════════════════════════════════════════════════════════════════
     # C. Cobertura y Rezago Social
     # ══════════════════════════════════════════════════════════════════════════
+    _hidden_tab_complejos = '''
     st.subheader("C · Huecos de Cobertura y Rezago Social")
     st.caption(
         f"AGEBs cuyo centroide está a más de {eps} km de cualquier unidad pública "
@@ -1253,6 +1254,7 @@ with tab_complejos:
             )
     else:
         st.info("Selecciona una alcaldía con datos CONEVAL para ver el análisis de cobertura.")
+    '''
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB PERSISTENCIA HOMOLÓGICA
