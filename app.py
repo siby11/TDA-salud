@@ -1958,6 +1958,31 @@ with tab_prior:
 
     st.divider()
 
+    # ── Nota metodológica ──────────────────────────────────────────────────────
+    with st.expander("Metodología del índice de importancia"):
+        st.markdown("""
+**Fórmula:**
+
+$$I(H_i) = 0.40 \\cdot P_i + 0.25 \\cdot B_i + 0.15 \\cdot D_i + 0.10 \\cdot R_i + 0.10 \\cdot N_i$$
+
+| Variable | Descripción | Fuente | Peso |
+|---|---|---|---|
+| P_i | Persistencia topológica normalizada (death − birth) / max | Ripser / TDA | 0.40 |
+| B_i | Bajo desarrollo social normalizado (1 − IDS_norm) | IDS EVALUA CDMX | 0.25 |
+| D_i | Densidad poblacional normalizada (pob / km²) | IDS × CONEVAL | 0.15 |
+| R_i | Rezago social normalizado | CONEVAL 2020 | 0.10 |
+| N_i | Proporción de NBI normalizada | IDS EVALUA CDMX | 0.10 |
+
+**Asignación espacial:** el centroide de cada hueco se estima a partir de los vértices de su clase homológica.
+La AGEB con centroide más próximo aporta las variables sociales. Si el AGEB está a más de ε km,
+el contexto se marca como *Aproximado*.
+
+**Clasificación interior/borde:** un hueco se considera interior si su centroide está a más de ε km
+del casco convexo de los puntos analizados; de lo contrario, puede ser un artefacto del borde del área.
+        """)
+
+    st.divider()
+
     # ══════════════════════════════════════════════════════════════════════════
     # A. MAPA
     # ══════════════════════════════════════════════════════════════════════════
@@ -2121,30 +2146,6 @@ with tab_prior:
             f"<br><small style='color:#444;line-height:1.5'>{_txt}</small></div>",
             unsafe_allow_html=True,
         )
-
-    # ── Nota metodológica ──────────────────────────────────────────────────────
-    with st.expander("Metodología del índice de importancia"):
-        st.markdown("""
-**Fórmula:**
-
-$$I(H_i) = 0.40 \\cdot P_i + 0.25 \\cdot B_i + 0.15 \\cdot D_i + 0.10 \\cdot R_i + 0.10 \\cdot N_i$$
-
-| Variable | Descripción | Fuente | Peso |
-|---|---|---|---|
-| P_i | Persistencia topológica normalizada (death − birth) / max | Ripser / TDA | 0.40 |
-| B_i | Bajo desarrollo social normalizado (1 − IDS_norm) | IDS EVALUA CDMX | 0.25 |
-| D_i | Densidad poblacional normalizada (pob / km²) | IDS × CONEVAL | 0.15 |
-| R_i | Rezago social normalizado | CONEVAL 2020 | 0.10 |
-| N_i | Proporción de NBI normalizada | IDS EVALUA CDMX | 0.10 |
-
-**Asignación espacial:** el centroide de cada hueco se estima a partir de los vértices de su clase homológica.
-La AGEB con centroide más próximo aporta las variables sociales. Si el AGEB está a más de ε km,
-el contexto se marca como *Aproximado*.
-
-**Clasificación interior/borde:** un hueco se considera interior si su centroide está a más de ε km
-del casco convexo de los puntos analizados; de lo contrario, puede ser un artefacto del borde del área.
-        """)
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB HALLAZGOS — REPORTE DINÁMICO
