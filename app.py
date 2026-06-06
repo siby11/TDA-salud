@@ -3070,42 +3070,64 @@ with tab_concl:
     )
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 1. SÍNTESIS METODOLÓGICA
+    # 1. RESUMEN DEL RECORRIDO ANALÍTICO
     # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("1 · Síntesis del Enfoque Metodológico")
+    st.subheader("1 · Resumen del Recorrido Analítico")
 
     col_met1, col_met2 = st.columns(2)
 
     with col_met1:
         st.markdown("""
-**¿Qué es TDA y por qué aplicarlo a salud pública?**
+**Qué se hizo a lo largo del tablero**
 
-El Análisis Topológico de Datos (TDA) estudia la *forma* de los datos en lugar de
-solo sus valores numéricos. En el contexto de salud pública, esto permite identificar
-**vacíos estructurales** en la red de establecimientos que métodos convencionales
-como K-Means o análisis de buffer no detectan.
+El análisis inició con la integración de cuatro fuentes públicas: DENUE para ubicar
+unidades de salud, CONEVAL para rezago social, IDS de EVALUA para desarrollo social
+y Censo 2020 para contexto demográfico. Con esto se construyó una lectura conjunta
+entre oferta de servicios y condiciones territoriales.
 
-El complejo de Vietoris-Rips construye una representación del espacio de cobertura
-que crece con el radio ε. Cuando ese espacio presenta **agujeros persistentes** (H₁),
-indica zonas rodeadas de servicios pero sin cobertura directa**.
+Después se exploró la red espacial de unidades de salud mediante complejos
+simpliciales: se visualizaron puntos, radios de cobertura, conexiones entre unidades,
+componentes H₀ y huecos H₁ activos para distintos valores de ε. Esta parte permitió
+pasar de una vista descriptiva a una lectura estructural de la cobertura.
 
-La persistencia homológica mide cuánto "sobrevive" cada hueco al aumentar ε.
-Una alta persistencia indica que la brecha es estructural, no un artefacto del muestreo.
+En la sección de persistencia homológica se cuantificó qué huecos permanecen al
+cambiar el radio de análisis, cuáles son estables y cuáles pueden interpretarse como
+ruido o efecto de borde. Luego, en la priorización, esos huecos se cruzaron con IDS,
+rezago, densidad y NBI para ordenar las zonas con mayor urgencia territorial.
+
+Finalmente, el reporte consolidó métricas, brechas de cobertura, zonas vulnerables
+y recomendaciones. Esta pestaña reúne ese recorrido y lo traduce en una estrategia
+de intervención: dónde mirar primero, qué evidencia respalda la prioridad y qué
+siguientes pasos permitirían convertir el diagnóstico en decisiones públicas.
         """)
 
     with col_met2:
-        # Diagrama del flujo metodológico como tabla visual
+        # Diagrama del flujo analítico como tabla visual
         flujo = pd.DataFrame({
-            "Paso": ["1. Datos", "2. Complejo VR", "3. Homología persistente",
-                     "4. Priorización", "5. Estrategia"],
-            "Herramienta": ["DENUE · CONEVAL · IDS", "Ripser (Vietoris-Rips)",
-                            "Diagramas H₀/H₁ · Betti curves",
-                            "Índice I(H) = P+B+D+R+N", "Mapa de intervención"],
-            "Resultado": ["22,816 unidades georreferenciadas",
-                          "Red de cobertura espacial dinámica",
-                          "Huecos estructurales cuantificados",
-                          "Ranking de prioridad con contexto social",
-                          "Zonas candidatas a nuevas unidades"],
+            "Paso": [
+                "1. Datos",
+                "2. Complejos simpliciales",
+                "3. Persistencia homológica",
+                "4. Priorización de huecos",
+                "5. Hallazgos",
+                "6. Estrategia",
+            ],
+            "Qué se hizo": [
+                "Se integraron DENUE, CONEVAL, IDS y población",
+                "Se construyó la red espacial de cobertura por ε",
+                "Se midió estabilidad de componentes H₀ y huecos H₁",
+                "Se ponderaron huecos con variables sociales",
+                "Se generó un reporte dinámico con brechas y zonas vulnerables",
+                "Se tradujo el diagnóstico en criterios de intervención",
+            ],
+            "Salida": [
+                "Base territorial limpia y comparable",
+                "Mapa de cobertura, aristas y huecos activos",
+                "Diagramas, curvas de Betti y huecos significativos",
+                "Ranking I(H) con contexto social",
+                "Síntesis exportable de resultados",
+                "Zonas candidatas y ruta de decisión",
+            ],
         })
         st.dataframe(flujo, width="stretch")
 
@@ -3258,12 +3280,12 @@ Este sistema genera valor para tres tipos de actores:
     st.markdown(
         "<div style='background:#2d3436;color:#dfe6e9;padding:20px 24px;"
         "border-radius:8px;text-align:center'>"
-        "<b style='font-size:1.1em'>TDA aplicado a Salud Pública — CDMX</b><br>"
-        "<span style='font-size:0.9em'>Este análisis demuestra que la topología de los datos "
-        "de salud revela patrones de exclusión que los métodos convencionales no pueden detectar. "
-        "La persistencia homológica no es solo una herramienta matemática: "
-        "es una lente para identificar dónde el sistema falla estructuralmente "
-        "a quienes más lo necesitan.</span><br><br>"
+        "<b style='font-size:1.1em'>Síntesis del análisis — Salud pública CDMX</b><br>"
+        "<span style='font-size:0.9em'>El tablero integra datos abiertos, visualización territorial, "
+        "análisis de cobertura, persistencia de huecos y priorización social para construir "
+        "un diagnóstico accionable. El resultado no es solo un mapa de puntos: es una ruta "
+        "para identificar zonas candidatas de intervención, justificar prioridades y comunicar "
+        "hallazgos con evidencia reproducible.</span><br><br>"
         "<small>Fuentes: DENUE 2025 (INEGI) · CONEVAL 2020 · IDS EVALUA CDMX · Censo 2020 (INEGI)</small>"
         "</div>",
         unsafe_allow_html=True,
