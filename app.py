@@ -397,7 +397,7 @@ with tab_datos:
         fig_mv.update_layout(coloraxis_showscale=False, height=420, margin=dict(l=0, r=10, t=40, b=0))
         st.plotly_chart(fig_mv, use_container_width=True)
 
-    col_c, col_d = st.columns(2)
+    col_c = st.container()
 
     # 1c. Subsector
     with col_c:
@@ -416,8 +416,9 @@ with tab_datos:
         fig3.update_xaxes(tickangle=-15)
         st.plotly_chart(fig3, use_container_width=True)
 
+    _hidden_tab_datos = '''
     # 1d. Tamaño (personal ocupado)
-    with col_d:
+    with st.container():
         per_order = [
             "0 a 5 personas", "6 a 10 personas", "11 a 30 personas",
             "31 a 50 personas", "51 a 100 personas",
@@ -477,10 +478,11 @@ with tab_datos:
         fig_tv.update_layout(coloraxis_showscale=False, height=320, margin=dict(l=0, r=0, t=40, b=60))
         fig_tv.update_xaxes(tickangle=-20)
         st.plotly_chart(fig_tv, use_container_width=True)
+    '''
 
     # 1e. Desglose público vs privado
     st.markdown("**Desglose por sector: Público vs Privado**")
-    col_e1, col_e2 = st.columns(2)
+    col_e1 = st.container()
 
     with col_e1:
         sub_sector = (
@@ -502,7 +504,8 @@ with tab_datos:
         fig_sub_sec.update_xaxes(tickangle=-15)
         st.plotly_chart(fig_sub_sec, width="stretch")
 
-    with col_e2:
+    _hidden_tab_datos = '''
+    with st.container():
         per_sector = (
             denue.groupby(["per_ocu", "sector"])
             .size()
@@ -523,6 +526,7 @@ with tab_datos:
         fig_per_sec.update_layout(height=360, margin=dict(l=0, r=0, t=40, b=60))
         fig_per_sec.update_xaxes(tickangle=-20)
         st.plotly_chart(fig_per_sec, width="stretch")
+    '''
 
     # 1f. Mapa de puntos DENUE
     st.markdown("**Distribución espacial de unidades económicas de salud**")
@@ -551,6 +555,7 @@ with tab_datos:
     # ══════════════════════════════════════════════════════════════════════════
     # 2. CONEVAL – Rezago Social
     # ══════════════════════════════════════════════════════════════════════════
+    _hidden_tab_datos = '''
     st.subheader("2 · CONEVAL – Rezago Social por AGEB")
 
     col_e, col_f = st.columns(2)
@@ -610,13 +615,14 @@ with tab_datos:
     st.plotly_chart(fig_map2, use_container_width=True)
 
     st.divider()
+    '''
 
     # ══════════════════════════════════════════════════════════════════════════
     # 3. IDS – Índice de Desarrollo Social
     # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("3 · IDS – Índice de Desarrollo Social por AGEB")
+    st.subheader("2 · IDS – Índice de Desarrollo Social por AGEB")
 
-    col_g, col_h = st.columns(2)
+    col_g = st.container()
 
     with col_g:
         ids_counts = (
@@ -638,7 +644,8 @@ with tab_datos:
         fig7.update_layout(showlegend=False, height=360, margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig7, use_container_width=True)
 
-    with col_h:
+    _hidden_tab_datos = '''
+    with st.container():
         fig8 = px.scatter(
             ids,
             x="ids_norm",
@@ -672,6 +679,7 @@ with tab_datos:
     )
     fig9.update_layout(margin=dict(l=0, r=0, t=40, b=0))
     st.plotly_chart(fig9, use_container_width=True)
+    '''
 
     # Mapa IDS — centroides desde CONEVAL
     st.markdown("**Distribución espacial del IDS por AGEB**")
@@ -708,6 +716,7 @@ with tab_datos:
     # ══════════════════════════════════════════════════════════════════════════
     # 4. POBLACIÓN POR MUNICIPIO
     # ══════════════════════════════════════════════════════════════════════════
+    _hidden_tab_datos = '''
     st.subheader("4 · Población y Derechohabiencia en Salud por Municipio")
 
     # Filtrar solo los 16 municipios clave (los que tienen pob > 0)
@@ -776,10 +785,12 @@ with tab_datos:
         st.plotly_chart(fig12, use_container_width=True)
 
     st.divider()
+    '''
 
     # ══════════════════════════════════════════════════════════════════════════
     # 5. SECCIÓN INTEGRADA – Contexto del análisis TDA
     # ══════════════════════════════════════════════════════════════════════════
+    _hidden_tab_datos = '''
     st.subheader("5 · Contexto Integrado: Oferta de Salud y Rezago Social")
     st.caption(
         "Esta sección vincula las bases para contextualizar el análisis topológico: "
@@ -871,6 +882,7 @@ with tab_datos:
             "¿los municipios con mayor rezago tienen suficiente oferta pública de salud? "
             "Los huecos identificados con TDA (Čech/Vietoris-Rips) permitirán cuantificar esta brecha espacialmente."
         )
+    '''
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB COMPLEJOS SIMPLICIALES
