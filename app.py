@@ -23,7 +23,7 @@ COLORS = {
     "Alto":      "#f0854f",
     "Muy alto":  "#c0392b",
     "Privado":   "#4e8df5",
-    "Público":   "#e74c3c",
+    "Público":   "#4e4240",
     "No gubernamental": "#9b59b6",
 }
 
@@ -539,8 +539,6 @@ with tab_datos:
         fig_sub_sec.update_xaxes(tickangle=-15)
         st.plotly_chart(fig_sub_sec, width="stretch")
 
-
-#######
     _hidden_tab_datos = '''
     with st.container():
         per_sector = (
@@ -3511,14 +3509,10 @@ Este sistema genera valor para tres tipos de actores:
         "<b style='font-size:1.1em'>Síntesis del análisis — Salud pública CDMX</b><br>"
         "<span style='font-size:0.9em'>El tablero integra datos abiertos, visualización territorial, "
         "análisis de cobertura, persistencia de huecos y priorización social para construir "
-        "un diagnóstico accionable. El resultado no solo representa un mapa puntos: es una ruta "
+        "un diagnóstico accionable. El resultado no es solo un mapa de puntos: es una ruta "
         "para identificar zonas candidatas de intervención, justificar prioridades y comunicar "
         "hallazgos con evidencia reproducible.</span><br><br>"
         "<small>Fuentes: DENUE 2025 (INEGI) · CONEVAL 2020 · IDS EVALUA CDMX · Censo 2020 (INEGI)</small>"
         "</div>",
         unsafe_allow_html=True,
     )
-
-
-
-#deffer
