@@ -892,7 +892,7 @@ with tab_complejos:
     st.caption(
         "Red de salud **pública** de CDMX analizada con TDA. "
         "Los círculos crecen (radio ε) y cuando se tocan forman una arista del complejo. "
-        "Los **huecos persistentes** en H₁ revelan zonas reales sin cobertura."
+        "Los **huecos persistentes** en H₁ sugieren posibles vacíos estructurales de cobertura."
     )
 
     # ── Controles fila 1 ─────────────────────────────────────────────────────
@@ -1159,7 +1159,7 @@ with tab_complejos:
         st.plotly_chart(fig_h1, width="stretch")
         st.caption(
             "Cada barra es un hueco topológico (zona rodeada de unidades sin cobertura interior). "
-            "Una barra larga = hueco **real y persistente**. "
+            "Una barra larga = hueco **persistente y candidato**. "
             "Una barra corta = ruido o irregularidad local."
         )
 
@@ -1287,7 +1287,7 @@ with tab_persist:
         thresh = st.slider(
             "Umbral de persistencia significativa (km)",
             min_value=0.1, max_value=3.0, value=0.5, step=0.1,
-            help="Features con persistencia ≥ umbral se consideran huecos reales (no ruido)",
+            help="Features con persistencia ≥ umbral se consideran huecos persistentes candidatos (no ruido)",
         )
     with pd2:
         eps_p = st.slider("ε de referencia (km)", 0.25, 8.0, 1.5, 0.25, key="eps_persist")
@@ -1672,7 +1672,7 @@ with tab_persist:
         st.plotly_chart(fig_hist, width="stretch")
         st.caption(
             "Las barras a la **izquierda del umbral** son ruido topológico. "
-            "Las barras a la **derecha** representan estructuras reales (huecos, clusters aislados)."
+            "Las barras a la **derecha** representan estructuras persistentes candidatas (huecos, clusters aislados)."
         )
 
     '''
@@ -2082,6 +2082,7 @@ del casco convexo de los puntos analizados; de lo contrario, puede ser un artefa
     # ══════════════════════════════════════════════════════════════════════════
     # C. TABLA DE PRIORIZACIÓN
     # ══════════════════════════════════════════════════════════════════════════
+    _comentado_prior_cd = """
     st.subheader("C · Tabla de Priorización")
 
     _df_show = df_holes[[
@@ -2147,6 +2148,181 @@ del casco convexo de los puntos analizados; de lo contrario, puede ser un artefa
         )
 
 # ═══════════════════════════════════════════════════════════════════════════════
+    """
+    st.divider()
+
+    # E. ANALISIS DE SENSIBILIDAD
+    st.subheader("E · Análisis de Sensibilidad de Pesos")
+    st.caption(
+        "Este análisis evalúa si los huecos prioritarios dependen demasiado de una sola "
+        "elección de pesos o si se mantienen robustos bajo criterios topológicos, sociales "
+        "y de densidad."
+    )
+
+    top_k_sens = st.slider(
+        "Número de huecos a comparar en el top",
+        min_value=3,
+        max_value=10,
+        value=5,
+        step=1,
+        key="top_k_sens",
+    )
+
+    df_sens = df_holes.copy()
+    _escenarios_sens = {
+        "Base": {"P_i": 0.40, "B_i": 0.25, "D_i": 0.15, "R_i": 0.10, "N_i": 0.10},
+        "Topológico": {"P_i": 0.55, "B_i": 0.15, "D_i": 0.10, "R_i": 0.10, "N_i": 0.10},
+        "Social": {"P_i": 0.30, "B_i": 0.30, "D_i": 0.15, "R_i": 0.10, "N_i": 0.15},
+        "Densidad": {"P_i": 0.35, "B_i": 0.20, "D_i": 0.25, "R_i": 0.10, "N_i": 0.10},
+    }
+
+    for _esc, _pesos in _escenarios_sens.items():
+        _col_ind = f"I_{_esc}"
+        df_sens[_col_ind] = sum(df_sens[_var] * _w for _var, _w in _pesos.items()).round(4)
+
+    _top_k_eff = min(top_k_sens, len(df_sens))
+    _tops_sens = {}
+    _rows_top_sens = []
+
+    for _esc in _escenarios_sens:
+        _col_ind = f"I_{_esc}"
+        _top_esc = (
+            df_sens.sort_values(_col_ind, ascending=False)
+            .head(_top_k_eff)
+            .reset_index(drop=True)
+        )
+        _tops_sens[_esc] = _top_esc
+        for _rank, (_, _r) in enumerate(_top_esc.iterrows(), start=1):
+            _rows_top_sens.append({
+                "Escenario": _esc,
+                "Ranking": _rank,
+                "Hueco": _r["label"],
+                "Índice": _r[_col_ind],
+                "Persistencia (km)": _r["persistence"],
+                "Tipo": _r["tipo"],
+                "Rezago social": _r["grado_rezago"],
+                "Grado IDS": _r["grado_ids"],
+                "Contexto social": _r["contexto"],
+            })
+
+    _df_top_sens = pd.DataFrame(_rows_top_sens)
+    st.dataframe(_df_top_sens, width="stretch")
+
+    _labels_top_sens = [
+        _label
+        for _top_esc in _tops_sens.values()
+        for _label in _top_esc["label"].tolist()
+    ]
+    _apariciones = pd.Series(_labels_top_sens).value_counts()
+    _df_robustez = (
+        df_sens[df_sens["label"].isin(_apariciones.index)][[
+            "label", "persistence", "tipo", "grado_rezago", "grado_ids", "contexto"
+        ]]
+        .copy()
+        .rename(columns={"label": "Hueco"})
+    )
+    _df_robustez["apariciones_top"] = _df_robustez["Hueco"].map(_apariciones).fillna(0).astype(int)
+    _df_robustez["robustez_pct"] = (
+        _df_robustez["apariciones_top"] / len(_escenarios_sens) * 100
+    ).round(1)
+    _df_robustez["clasificacion_robustez"] = _df_robustez["apariciones_top"].map({
+        4: "Robusto integral",
+        3: "Muy estable",
+        2: "Estable parcial",
+        1: "Dependiente del criterio",
+    })
+    _df_robustez = _df_robustez.sort_values(
+        ["apariciones_top", "robustez_pct", "persistence"],
+        ascending=[False, False, False],
+    )
+    _df_robustez = _df_robustez[[
+        "Hueco", "apariciones_top", "robustez_pct", "clasificacion_robustez",
+        "persistence", "tipo", "grado_rezago", "grado_ids", "contexto",
+    ]]
+    st.dataframe(_df_robustez, width="stretch")
+
+    if len(_df_robustez) > 0:
+        _fig_robustez = px.bar(
+            _df_robustez,
+            x="Hueco",
+            y="robustez_pct",
+            color="clasificacion_robustez",
+            title="Robustez de huecos ante cambios de pesos",
+            labels={
+                "robustez_pct": "Robustez (%)",
+                "clasificacion_robustez": "Clasificación",
+            },
+            height=380,
+        )
+        _fig_robustez.update_layout(margin=dict(t=50, b=40, l=0, r=0))
+        st.plotly_chart(_fig_robustez, width="stretch")
+
+        _labels_robustos = _df_robustez["Hueco"].tolist()
+        _df_indices_sens = df_sens[df_sens["label"].isin(_labels_robustos)][
+            ["label"] + [f"I_{_esc}" for _esc in _escenarios_sens]
+        ].copy()
+        _df_indices_sens = _df_indices_sens.rename(columns={"label": "Hueco"})
+        _df_indices_long = _df_indices_sens.melt(
+            id_vars="Hueco",
+            var_name="Escenario",
+            value_name="Índice",
+        )
+        _df_indices_long["Escenario"] = _df_indices_long["Escenario"].str.replace("I_", "", regex=False)
+
+        _fig_indices_sens = px.bar(
+            _df_indices_long,
+            x="Hueco",
+            y="Índice",
+            color="Escenario",
+            barmode="group",
+            title="Comparación del índice por escenario de pesos",
+            height=420,
+        )
+        _fig_indices_sens.update_layout(margin=dict(t=50, b=40, l=0, r=0))
+        st.plotly_chart(_fig_indices_sens, width="stretch")
+
+        _base_rank = {
+            _label: _rank
+            for _rank, _label in enumerate(_tops_sens["Base"]["label"].tolist(), start=1)
+        }
+
+        def _huecos_que_suben(_escenario):
+            _labels = []
+            for _rank, _label in enumerate(_tops_sens[_escenario]["label"].tolist(), start=1):
+                _rank_base = _base_rank.get(_label, _top_k_eff + 1)
+                if _rank < _rank_base:
+                    _labels.append(_label)
+            return _labels
+
+        _robustos_integrales = _df_robustez[
+            _df_robustez["apariciones_top"] == len(_escenarios_sens)
+        ]["Hueco"].tolist()
+        _suben_topologico = _huecos_que_suben("Topológico")
+        _suben_social = _huecos_que_suben("Social")
+
+        _txt_robustos = (
+            f"Huecos presentes en todos los escenarios: **{', '.join(_robustos_integrales)}**."
+            if _robustos_integrales else
+            "No hubo huecos completamente robustos en todos los escenarios."
+        )
+        _txt_topologico = (
+            f"En el escenario **Topológico** suben en el ranking: **{', '.join(_suben_topologico)}**."
+            if _suben_topologico else
+            "En el escenario **Topológico** no hay huecos que suban respecto al ranking Base dentro del top seleccionado."
+        )
+        _txt_social = (
+            f"En el escenario **Social** suben en el ranking: **{', '.join(_suben_social)}**."
+            if _suben_social else
+            "En el escenario **Social** no hay huecos que suban respecto al ranking Base dentro del top seleccionado."
+        )
+        st.info(
+            f"{_txt_robustos}\n\n"
+            f"{_txt_topologico}\n\n"
+            f"{_txt_social}\n\n"
+            "Los huecos robustos son mejores candidatos para intervención porque su prioridad "
+            "no depende de una sola elección de pesos."
+        )
+
 # TAB HALLAZGOS — REPORTE DINÁMICO
 # ═══════════════════════════════════════════════════════════════════════════════
 _hidden_tab_report = '''
@@ -2511,7 +2687,7 @@ with tab_report:
             " Estructura topológica",
             f"El análisis TDA identifica **{len(h1_r)} huecos topológicos**, de los cuales "
             f"**{n_sig_r} son significativos** (persistencia ≥ {thresh_r} km): "
-            f"**{n_sig_int_r} interiores** (reales) y **{n_sig_brd_r} posibles artefactos de borde**. "
+            f"**{n_sig_int_r} interiores** (huecos candidatos) y **{n_sig_brd_r} posibles artefactos de borde**. "
             f"El radio crítico donde coexisten más huecos es **ε ≈ {peak_eps_r:.2f} km**."
         ),
         (
@@ -3045,7 +3221,7 @@ with tab_report:
 #          "Útil para priorizar zonas de alta vulnerabilidad socioeconómica y asignar recursos de manera eficiente."),
 #         ("#fce4ec", "#e74c3c", "Lo que K-Means no puede",
 #          "Detectar huecos topológicos en la red de servicios. Un cluster de baja vulnerabilidad "
-#          "puede contener un vacío real de cobertura si la red de salud no conecta esa zona con ninguna unidad pública."),
+#          "puede contener un posible vacío estructural de cobertura si la red de salud no conecta esa zona con ninguna unidad pública."),
 #         ("#e3f2fd", "#3498db", f"El valor agregado de TDA ({_n_int_c} hueco{'s' if _n_int_c != 1 else ''} interior{'es' if _n_int_c != 1 else ''} confirmado{'s' if _n_int_c != 1 else ''})",
 #          f"TDA identifica {_n_int_c} hueco{'s' if _n_int_c != 1 else ''} interior{'es' if _n_int_c != 1 else ''} confirmado{'s' if _n_int_c != 1 else ''} "
 #          f"que representan zonas sin acceso estructural a salud pública independientemente del perfil "
@@ -3180,7 +3356,7 @@ siguientes pasos permitirían convertir el diagnóstico en decisiones públicas.
             "Los huecos H₁ son estructurales, no aleatorios",
             "La persistencia homológica identifica huecos cuya existencia no depende del radio ε "
             "elegido: sobreviven en un rango amplio de radios, lo que confirma que representan "
-            "vacíos reales en la red de cobertura. Los huecos con persistencia > 1 km indican "
+            "posibles vacíos estructurales en la red de cobertura. Los huecos con persistencia > 1 km indican "
             "zonas donde la red pública no puede compensar la distancia con ningún ajuste de parámetros."
         ),
         (
@@ -3190,7 +3366,7 @@ siguientes pasos permitirían convertir el diagnóstico en decisiones públicas.
             "que clasifica la mayoría de AGEBs de CDMX como de rezago bajo o muy bajo—, "
             "el Índice de Desarrollo Social (IDS) de EVALUA captura desigualdades intraurbanas "
             "con mayor precisión. Los huecos priorizados con mayor peso en B_i (bajo desarrollo IDS) "
-            "corresponden a zonas con necesidades reales no reflejadas por el indicador federal."
+            "corresponden a zonas con necesidades sociales no reflejadas por el indicador federal."
         ),
         (
             "#d63031", "#ff7675",
