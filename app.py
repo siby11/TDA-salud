@@ -3202,288 +3202,187 @@ with tab_concl:
 
     st.header("Conclusiones y Estrategia de Intervención")
     st.caption(
-        "Síntesis de los hallazgos del análisis topológico aplicado al sector salud pública "
-        "en la Ciudad de México, con una propuesta de estrategia de intervención basada en evidencia."
+        "Síntesis ejecutiva del análisis TDA aplicado a la red pública de salud en CDMX: "
+        "hallazgos principales, justificación metodológica y estrategia de intervención."
     )
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 0. RESUMEN EJECUTIVO (una página)
+    # 0. CÁLCULO DE MÉTRICAS GLOBALES
     # ══════════════════════════════════════════════════════════════════════════
 
-    # Cómputo rápido global (cached — sin costo en recargas)
     _pub_exec = denue[denue["sector"] == "Público"].dropna(subset=["latitud", "longitud"])
     _pts_exec = _pub_exec[["latitud", "longitud"]].values
+
     if len(_pts_exec) > 2100:
         _rng_exec = np.random.default_rng(42)
         _pts_exec = _pts_exec[_rng_exec.choice(len(_pts_exec), 2100, replace=False)]
+
     with st.spinner("Calculando métricas globales…"):
         _dgms_exec, _, _ = _compute_tda_full(tuple(map(tuple, _pts_exec)))
-    _h1_exec  = np.array(_dgms_exec[1]) if len(_dgms_exec[1]) else np.empty((0, 2))
+
+    _h1_exec = np.array(_dgms_exec[1]) if len(_dgms_exec[1]) else np.empty((0, 2))
     _h1p_exec = (_h1_exec[:, 1] - _h1_exec[:, 0]) if len(_h1_exec) else np.array([])
     _h1p_fin_exec = _h1p_exec[~np.isinf(_h1p_exec)] if len(_h1p_exec) else np.array([])
+
     if len(_h1p_fin_exec) >= 2:
-        _mu_exec    = float(_h1p_fin_exec.mean())
-        _sig_exec   = float(_h1p_fin_exec.std())
-        _thr_exec   = _mu_exec + 0.5 * _sig_exec
+        _mu_exec = float(_h1p_fin_exec.mean())
+        _sig_exec = float(_h1p_fin_exec.std())
+        _thr_exec = _mu_exec + 0.5 * _sig_exec
         _n_sig_exec = int((_h1p_exec >= _thr_exec).sum())
         _max_p_exec = float(_h1p_fin_exec.max())
     else:
-        _thr_exec = 0.5; _n_sig_exec = 0; _max_p_exec = 0.0
+        _thr_exec = 0.5
+        _n_sig_exec = 0
+        _max_p_exec = 0.0
 
-    # Alcaldía con menor cobertura — calculada sobre el dataset completo
     _rez_num_map = {"Muy bajo": 1, "Bajo": 2, "Medio": 3, "Alto": 4, "Muy alto": 5}
-    _pub_by_mun  = _pub_exec.groupby("municipio").size()
+    _pub_by_mun = _pub_exec.groupby("municipio").size()
+
     _ageb_by_mun = coneval.copy()
     _ageb_by_mun["mun_code"] = _ageb_by_mun["cvegeo"].astype(str).str[2:5]
     _ageb_by_mun["mun_name"] = _ageb_by_mun["mun_code"].map(MUN_MAP)
-    _rez_score   = (
+
+    _rez_score = (
         _ageb_by_mun.dropna(subset=["mun_name"])
         .assign(rez_num=lambda df: df["grado_rezago_social"].map(_rez_num_map).astype(float))
-        .groupby("mun_name")["rez_num"].mean()
+        .groupby("mun_name")["rez_num"]
+        .mean()
     )
+
     _pub_density = _pub_by_mun / (_ageb_by_mun.groupby("mun_name").size().replace(0, np.nan))
-    _vuln_score  = _rez_score / (_pub_density + 1e-9)
-    _worst_mun   = str(_vuln_score.idxmax()) if len(_vuln_score) else "Milpa Alta"
-    _best_mun    = str(_pub_density.idxmax()) if len(_pub_density) else "Cuauhtémoc"
+    _vuln_score = _rez_score / (_pub_density + 1e-9)
+
+    _worst_mun = str(_vuln_score.idxmax()) if len(_vuln_score) else "Xochimilco"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 1. RESUMEN EJECUTIVO
+    # ══════════════════════════════════════════════════════════════════════════
 
     st.markdown(
         "<div style='background:linear-gradient(135deg,#2d3436,#0984e3);"
-        "color:#fff;padding:22px 28px;border-radius:10px;margin-bottom:18px'>"
-        "<b style='font-size:1.15em;letter-spacing:.5px'>RESUMEN EJECUTIVO</b>"
-        "<p style='margin:6px 0 0;font-size:0.92em;opacity:.88'>"
-        "El análisis topológico de datos (TDA) sobre la red de salud pública de la CDMX . </p></div>",
+        "color:#fff;padding:24px 30px;border-radius:10px;margin-bottom:20px'>"
+        "<b style='font-size:1.2em;letter-spacing:.5px'>RESUMEN EJECUTIVO</b>"
+        "<p style='margin:8px 0 0;font-size:0.95em;opacity:.9'>"
+        "Este tablero convierte datos públicos de salud en una herramienta para detectar brechas "
+        "de cobertura, medir su importancia y priorizar posibles intervenciones territoriales."
+        "</p></div>",
         unsafe_allow_html=True,
     )
 
-    _ex1, _ex2, _ex3, _ex4 = st.columns(4)
-    _ex1.metric("Unidades públicas analizadas", f"{len(_pts_exec):,}",
-                help="DENUE 2025 — sector salud pública CDMX")
-    _ex2.metric("Huecos estructurales H₁", _n_sig_exec,
-                help=f"Persistencia ≥ {_thr_exec:.2f} km (μ + ½σ). Huecos que sobreviven al cambiar el radio.")
-    _ex3.metric("Persistencia máxima", f"{_max_p_exec:.2f} km",
-                help="El hueco más grave dura este rango de radios sin desaparecer.")
-    _ex4.metric("Alcaldía más vulnerable", _worst_mun,
-                help="Mayor cociente rezago/densidad de oferta pública.")
-
-    _card_data = [
-        ("#d63031", "Brecha geográfica confirmada",
-         f"Los {_n_sig_exec} huecos H₁ persistentes no son artefactos del radio elegido. "
-         f"Sobreviven en un rango de hasta {_max_p_exec:.1f} km. Representan "
-         "zonas donde ningún ajuste de parámetros hace desaparecer la ausencia de cobertura."),
-        ("#0984e3", "Concentración y periferia",
-         f"La oferta pública se concentra en alcaldías centrales ({_best_mun} lidera en densidad). "
-         f"La periferia sur-oriente —especialmente {_worst_mun}— combina baja densidad de servicios "
-         "con el mayor rezago social, creando una doble vulnerabilidad que el análisis topológico muestra."),
-        ("#00b894", "Herramienta accionable para política pública",
-         "El índice I(H) = 0.40·Persistencia + 0.25·IDS + 0.15·Densidad + 0.10·Rezago + 0.10·NBI "
-         "ordena los huecos por urgencia territorial. El tomador de decisiones obtiene un ranking "
-         "reproducible, actualizable y defendible para priorizar inversión en infraestructura sanitaria."),
-    ]
-    for _c_color, _c_title, _c_text in _card_data:
-        st.markdown(
-            f"<div style='border-left:5px solid {_c_color};background:#f8f9fa;"
-            f"padding:14px 18px;border-radius:6px;margin-bottom:10px'>"
-            f"<b style='color:{_c_color}'>{_c_title}</b>"
-            f"<br><span style='color:#444;font-size:0.93em;line-height:1.65'>{_c_text}</span></div>",
-            unsafe_allow_html=True,
-        )
-
-    st.divider()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # 1. RESUMEN DEL RECORRIDO ANALÍTICO
-    # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("1 · Resumen Analítico")
-
-    col_met1, col_met2 = st.columns(2)
-
-    with col_met1:
-        st.markdown("""
-**Qué se hizo a lo largo del tablero**
-
-El análisis inició con la integración de cuatro fuentes públicas: DENUE para ubicar
-unidades de salud, CONEVAL para rezago social, IDS de EVALUA para desarrollo social
-y Censo 2020 para contexto demográfico. Con esto se construyó una lectura conjunta
-entre oferta de servicios y condiciones territoriales.
-
-Después se exploró la red espacial de unidades de salud mediante complejos
-simpliciales. Se visualizaron puntos, radios de cobertura, conexiones entre unidades,
-componentes H₀ y huecos H₁ activos para distintos valores de ε, para poder
-pasar de una vista descriptiva a una lectura de cobertura.
-
-En la sección de persistencia homológica se cuantificó qué huecos permanecen al
-cambiar el radio de análisis, cuáles son estables y cuáles pueden interpretarse como
-ruido o efecto de borde. Luego, en la priorización, esos huecos se cruzaron con IDS,
-rezago, densidad y NBI para ordenar las zonas con mayor urgencia territorial.
-
-Finalmente, se consolidaron métricas, brechas de cobertura, zonas vulnerables
-y recomendaciones. Esta pestaña reúne todo para lograr una estrategia
-de intervención.
-        """)
-
-    with col_met2:
-        # Diagrama del flujo analítico como tabla visual
-        flujo = pd.DataFrame({
-            "Paso": [
-                "1. Datos",
-                "2. Complejos simpliciales",
-                "3. Persistencia homológica",
-                "4. Priorización de huecos",
-                "5. Hallazgos",
-                "6. Estrategia",
-            ],
-            "Qué se hizo": [
-                "Se integraron DENUE, CONEVAL, IDS y población",
-                "Se construyó la red espacial de cobertura por ε",
-                "Se midió estabilidad de componentes H₀ y huecos H₁",
-                "Se ponderaron huecos con variables sociales",
-                "Se generó un reporte dinámico con brechas y zonas vulnerables",
-                "Se tradujo el diagnóstico en criterios de intervención",
-            ],
-            "Salida": [
-                "Base territorial limpia y comparable",
-                "Mapa de cobertura, aristas y huecos activos",
-                "Diagramas, curvas de Betti y huecos significativos",
-                "Ranking I(H) con contexto social",
-                "Síntesis exportable de resultados",
-                "Zonas candidatas y ruta de decisión",
-            ],
-        })
-        st.dataframe(flujo, width="stretch")
-
-       
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Unidades públicas analizadas", f"{len(_pts_exec):,}")
+    c2.metric("Huecos H₁ persistentes", _n_sig_exec)
+    c3.metric("Persistencia máxima", f"{_max_p_exec:.2f} km")
+    c4.metric("Alcaldía más vulnerable", _worst_mun)
 
     st.divider()
 
     # ══════════════════════════════════════════════════════════════════════════
     # 2. HALLAZGOS PRINCIPALES
     # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("2 · Hallazgos Principales del Análisis")
 
-    # Métricas clave del dataset completo (calculadas una vez)
-    _pub_total   = denue[denue["sector"] == "Público"].dropna(subset=["latitud", "longitud"])
-    _priv_total  = denue[denue["sector"] == "Privado"].dropna(subset=["latitud", "longitud"])
-    _ageb_con    = coneval.merge(
-        ids[["cvegeo", "bajo_desarrollo_norm", "prop_nbi_norm", "grado_ids", "poblacion_ids"]],
-        on="cvegeo", how="left"
-    ).dropna(subset=["centroide_lat", "centroide_lon"])
-    _n_pub       = len(_pub_total)
-    _n_priv      = len(_priv_total)
-    _n_ageb      = len(_ageb_con)
-    _pct_pub     = _n_pub / (_n_pub + _n_priv) * 100
-    _alto_rezago = coneval[coneval["grado_rezago_social"].isin(["Alto", "Muy alto"])]
-    _pct_alto    = len(_alto_rezago) / len(coneval) * 100
+    st.subheader("1 · Hallazgos principales")
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Unidades públicas", f"{_n_pub:,}")
-    c2.metric("Unidades privadas", f"{_n_priv:,}")
-    c3.metric("Sector público", f"{_pct_pub:.1f}%")
-    c4.metric("AGEBs analizadas", f"{_n_ageb:,}")
-    c5.metric("AGEBs rezago alto/muy alto", f"{_pct_alto:.1f}%")
-
-    st.markdown("")
-
-    _hallazgos_principales = [
+    _hallazgos = [
         (
-            "#2d3436", "#636e72",
-            "Oferta de salud pública concentrada y desigual",
-            "El sector público representa menos de un tercio de las unidades de salud en CDMX. "
-            "La distribución espacial muestra alta concentración en alcaldías centrales "
-            "(Cuauhtémoc, Benito Juárez, Miguel Hidalgo) y déficit estructural en la periferia "
-            "(Milpa Alta, Tláhuac, La Magdalena Contreras). Esta asimetría no es visible "
-            "con indicadores de densidad simple, pero sí con TDA."
+            "#d63031",
+            "1. Existen brechas estructurales de cobertura",
+            f"Se detectaron **{_n_sig_exec} huecos H₁ persistentes**. Estos huecos sí desaparecen "
+            f"cuando el radio crece lo suficiente, pero sobreviven durante un rango amplio de escalas; "
+            f"por eso se interpretan como posibles vacíos reales y no como ruido del modelo."
         ),
         (
-            "#0984e3", "#74b9ff",
-            "Los huecos H₁ son estructurales.",
-            "La persistencia homológica identifica huecos cuya existencia no depende del radio ε "
-            "elegido: sobreviven en un rango amplio de radios, lo que confirma que representan "
-            "posibles vacíos estructurales en la red de cobertura. Los huecos con persistencia > 1 km indican "
-            "zonas donde la red pública no puede compensar la distancia con ningún ajuste de parámetros."
+            "#0984e3",
+            "2. La oferta pública no está distribuida de forma uniforme",
+            "La red de salud pública se concentra más en zonas centrales, mientras que algunas zonas "
+            "periféricas presentan menor densidad relativa de servicios."
         ),
         (
-            "#6c5ce7", "#a29bfe",
-            "El IDS es el mejor discriminador de vulnerabilidad en CDMX",
-            "A diferencia del rezago social de CONEVAL —calibrado a escala nacional, "
-            "que clasifica la mayoría de AGEBs de CDMX como de rezago bajo o muy bajo—, "
-            "el Índice de Desarrollo Social (IDS) de EVALUA captura desigualdades intraurbanas "
-            "con mayor precisión. Los huecos priorizados con mayor peso en B_i (bajo desarrollo IDS) "
-            "corresponden a zonas con necesidades sociales no reflejadas por el indicador federal."
-        ),
-        (
-            "#d63031", "#ff7675",
-            "Coincidencia entre huecos topológicos y vulnerabilidad social",
-            "Los huecos H₁ interiores de mayor persistencia no son aleatorios respecto al "
-            "perfil socioeconómico: tienden a coincidir con AGEBs de IDS bajo y alta proporción "
-            "de NBI. La brecha de cobertura en salud pública no es geométrica "
-            "solamente, sino que se superpone con las zonas de mayor necesidad social."
-        ),
-        (
-            "#00b894", "#55efc4",
-            "K-Means no puede reemplazar a TDA para este diagnóstico",
-            "El análisis comparativo demuestra que K-Means agrupa AGEBs por similitud de "
-            "atributos pero no puede detectar huecos en la red de servicios. Los huecos TDA "
-            "cruzan múltiples clusters de K-Means, por lo queson una propiedad "
-            "topológica de la red y no un artefacto de la segmentación por variables."
+            "#6c5ce7",
+            "3. La vulnerabilidad social aumenta la prioridad de intervención",
+            f"**{_worst_mun}** aparece como la alcaldía más vulnerable porque combina menor cobertura relativa "
+            f"con condiciones sociales menos favorables. El problema no es solo geográfico, también es social."
         ),
     ]
 
-    for _bg, _bd, _title, _text in _hallazgos_principales:
+    for _color, _title, _text in _hallazgos:
         st.markdown(
-            f"<div style='background:#f8f9fa;border-left:5px solid {_bd};"
+            f"<div style='border-left:5px solid {_color};background:#f8f9fa;"
             f"padding:14px 18px;border-radius:6px;margin-bottom:10px'>"
-            f"<b style='color:{_bg}'>{_title}</b>"
-            f"<br><span style='color:#444;font-size:0.93em;line-height:1.6'>{_text}</span></div>",
+            f"<b style='color:{_color}'>{_title}</b><br>"
+            f"<span style='color:#444;font-size:0.93em;line-height:1.6'>{_text}</span>"
+            f"</div>",
             unsafe_allow_html=True,
         )
 
     st.divider()
 
-    
-
     # ══════════════════════════════════════════════════════════════════════════
-    #  ¿POR QUÉ TDA Y NO BUFFER / K-MEANS?
+    # 3. ¿POR QUÉ TDA?
     # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("B · ¿Por qué TDA y no buffer, K-Means o regresion?")
-    st.caption("La topologia algebraica detecta patrones estructurales que los metodos convencionales no pueden capturar.")
 
-    _comp_headers = ["Capacidad", "Buffer / isocrona", "K-Means", "Regresion espacial", "TDA (este analisis)"]
-    _comp_rows = [
-        ("Detecta huecos en la red de servicios",         "No",      "No",     "Parcial",  "Si"),
-        ("Resultado estable al cambiar el radio",         "No",      "No",     "Varia",    "Si (persistencia)"),
-        ("No requiere supuestos de forma del espacio",    "No",      "No",     "No",       "Si"),
-        ("Cuantifica la gravedad del hueco",              "No",      "No",     "Si",       "Si (vida del feature)"),
-        ("Detecta huecos que cruzan multiples clusters",  "No",      "No",     "No",       "Si"),
-        ("Integra variables sociales",                    "No",      "Si",     "Si",       "Si (indice I(H))"),
-        ("Reproducible y actualizable",                   "Si",      "Si",     "Si",       "Si"),
+    st.subheader("2 · ¿Por qué TDA es el método indicado?")
+    st.caption(
+        "TDA es útil porque analiza la forma de la red, no solamente la distancia o la similitud entre zonas."
+    )
+
+    _comp_headers = [
+        "Capacidad",
+        "Buffer / isocrona",
+        "K-Means",
+        "Regresión espacial",
+        "TDA"
     ]
-    _s_yes  = "background:#d4edda;color:#155724;font-weight:600;border-radius:4px;padding:2px 7px"
-    _s_no   = "background:#f8d7da;color:#721c24;border-radius:4px;padding:2px 7px"
+
+    _comp_rows = [
+        ("Detecta huecos en la red de servicios", "No", "No", "Parcial", "Sí"),
+        ("Evalúa estabilidad al cambiar el radio", "No", "No", "Varía", "Sí, por persistencia"),
+        ("No depende de clusters circulares", "Sí", "No", "Parcial", "Sí"),
+        ("Mide la gravedad del hueco", "No", "No", "Parcial", "Sí, por vida del feature"),
+        ("Detecta huecos que cruzan varios clusters", "No", "No", "No", "Sí"),
+        ("Integra variables sociales", "Parcial", "Sí", "Sí", "Sí, con índice I(H)"),
+        ("Sirve para priorizar intervención", "Parcial", "Parcial", "Parcial", "Sí"),
+    ]
+
+    _s_yes = "background:#d4edda;color:#155724;font-weight:600;border-radius:4px;padding:2px 7px"
+    _s_no = "background:#f8d7da;color:#721c24;border-radius:4px;padding:2px 7px"
     _s_part = "background:#fff3cd;color:#856404;border-radius:4px;padding:2px 7px"
-    def _b(v):
-        return (f"<span style='{_s_yes}'>{v}</span>" if "Si" in v
-                else f"<span style='{_s_no}'>{v}</span>" if v == "No"
-                else f"<span style='{_s_part}'>{v}</span>")
-    _th = "".join(f"<th style='background:#2d3436;color:#fff;padding:8px 10px;text-align:left'>{h}</th>" for h in _comp_headers)
+
+    def _badge(v):
+        if v.startswith("Sí"):
+            return f"<span style='{_s_yes}'>{v}</span>"
+        elif v == "No":
+            return f"<span style='{_s_no}'>{v}</span>"
+        else:
+            return f"<span style='{_s_part}'>{v}</span>"
+
+    _th = "".join(
+        f"<th style='background:#2d3436;color:#fff;padding:8px 10px;text-align:left'>{h}</th>"
+        for h in _comp_headers
+    )
+
     _tb = ""
-    for _ri, (_cap, *_vals) in enumerate(_comp_rows):
-        _bg2 = "#f8f9fa" if _ri % 2 == 0 else "#fff"
-        _tb += f"<tr style='background:{_bg2}'><td style='padding:7px 10px'>{_cap}</td>"
-        _tb += "".join(f"<td style='padding:7px 10px;text-align:center'>{_b(v)}</td>" for v in _vals)
+    for _i, (_cap, *_vals) in enumerate(_comp_rows):
+        _bg = "#f8f9fa" if _i % 2 == 0 else "#ffffff"
+        _tb += f"<tr style='background:{_bg}'><td style='padding:7px 10px'>{_cap}</td>"
+        _tb += "".join(
+            f"<td style='padding:7px 10px;text-align:center'>{_badge(v)}</td>"
+            for v in _vals
+        )
         _tb += "</tr>"
+
     st.markdown(
         f"<table style='width:100%;border-collapse:collapse;font-size:0.88em'>"
         f"<thead><tr>{_th}</tr></thead><tbody>{_tb}</tbody></table>",
         unsafe_allow_html=True,
     )
-    st.markdown("")
+
     st.markdown(
-        "<div style='background:#0984e3;color:#fff;padding:14px 18px;border-radius:8px;margin-top:10px'>"
-        "Un buffer de 1.5 km puede reportar que el 85% de las AGEBs "
-        "estan cubiertas. TDA dice que dentro de ese porcentaje existen <i>huecos estructurales</i> "
-        "que el buffer no puede ver porque no mide la <i>forma topologica</i> de la red, solo la "
-        "distancia punto a punto. La persistencia homologica confirma que esos huecos no son ruido, sino que"
-        "sobreviven al variar el radio, convirtiendolos en candidatos verificables para intervencion."
+        "<div style='background:#0984e3;color:#fff;padding:14px 18px;"
+        "border-radius:8px;margin-top:12px'>"
+        "<b>Lectura clave:</b> Buffer mide cercanía, K-Means agrupa zonas parecidas "
+        "y la regresión explica relaciones entre variables. TDA es el método indicado porque "
+        "detecta huecos en la forma de la red, mide su estabilidad y permite priorizarlos con datos sociales."
         "</div>",
         unsafe_allow_html=True,
     )
@@ -3491,76 +3390,89 @@ de intervención.
     st.divider()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 3. MODELO DE NEGOCIO / PROPUESTA DE VALOR
+    # 4. ESTRATEGIA DE INTERVENCIÓN
     # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("3 · Propuesta de Valor y Modelo de Aplicación")
 
-    col_n1, col_n2 = st.columns([3, 2])
+    st.subheader("3 · Estrategia de intervención")
 
-    with col_n1:
-        st.markdown("""
-**¿A quién va dirigido este análisis?**
+    st.markdown(
+        """
+La propuesta no es simplemente construir más clínicas, sino usar el tablero como una **ruta de decisión**:
+identificar dónde están las brechas, medir cuáles son más importantes y decidir dónde conviene intervenir primero.
+        """
+    )
 
-Este sistema genera valor para tres tipos de actores:
+    e1, e2, e3 = st.columns(3)
 
-**Sector público (gobierno)**
-- Secretaría de Salud CDMX: priorización de inversión en infraestructura sanitaria
-- Alcaldías: identificación de zonas de exclusión en su territorio
-- SEDESA / IMSS-Bienestar: diseño de redes de atención primaria
-- Evaluaciones de impacto de programas existentes (Médico en tu Casa, etc.)
+    with e1:
+        st.markdown(
+            "<div style='background:#f8f9fa;border-left:5px solid #00b894;"
+            "padding:15px;border-radius:6px;height:170px'>"
+            "<b style='color:#00b894'>¿A quién va dirigida?</b><br><br>"
+            "Principalmente a gobierno, alcaldías e instituciones de salud que necesitan decidir "
+            "dónde invertir recursos limitados."
+            "</div>",
+            unsafe_allow_html=True,
+        )
 
-**Sector académico y OSC**
-- Validación empírica de brechas de cobertura con metodología reproducible
-- Insumo para propuestas de política pública basadas en evidencia topológica
-- Extensión a otros indicadores sociales (educación, agua, movilidad)
+    with e2:
+        st.markdown(
+            "<div style='background:#f8f9fa;border-left:5px solid #0984e3;"
+            "padding:15px;border-radius:6px;height:170px'>"
+            "<b style='color:#0984e3'>¿Qué ofrece?</b><br><br>"
+            "Un ranking de zonas prioritarias basado en huecos persistentes, desarrollo social, "
+            "densidad, rezago y necesidades básicas."
+            "</div>",
+            unsafe_allow_html=True,
+        )
 
-**Sector privado (salud y tecnología)**
-- Aseguradoras: identificación de mercados potenciales desatendidos
-- Operadores de clínicas privadas: análisis de localización basado en demanda social
-- Startups de salud digital: zonas objetivo para telemedicina y farmacias con servicios
-        """)
+    with e3:
+        st.markdown(
+            "<div style='background:#f8f9fa;border-left:5px solid #6c5ce7;"
+            "padding:15px;border-radius:6px;height:170px'>"
+            "<b style='color:#6c5ce7'>¿Por qué es útil?</b><br><br>"
+            "Porque convierte un análisis complejo en una herramienta clara, actualizable y defendible "
+            "para tomar decisiones públicas."
+            "</div>",
+            unsafe_allow_html=True,
+        )
 
-    with col_n2:
-        # Tabla de propuesta de valor
-        _pv = pd.DataFrame({
-            "Dimensión": [
-                "Problema que resuelve",
-                "Diferenciador clave",
-                "Fuentes de datos",
-                "Costo de replicación",
-                "Periodicidad sugerida",
-                "Escalabilidad",
-            ],
-            "Descripción": [
-                "Identificar brechas de cobertura en salud que el análisis tradicional no ve",
-                "TDA detecta huecos estructurales imposibles con buffer, K-Means o regresión",
-                "DENUE (INEGI) · CONEVAL · IDS EVALUA · Censo 2020 — todos públicos y gratuitos",
-                "Bajo: datos abiertos + herramientas open-source (Ripser, Streamlit, Python)",
-                "Anual (actualización DENUE) o semestral con datos administrativos",
-                "Aplicable a cualquier ciudad mexicana con datos DENUE y CONEVAL disponibles",
-            ],
-        })
-        st.dataframe(_pv, width="stretch")
+    st.markdown(
+        """
+**Ruta propuesta**
+
+1. Detectar huecos H₁ persistentes en la red pública de salud.  
+2. Cruzarlos con IDS, rezago, NBI y densidad poblacional.  
+3. Priorizar las zonas con mayor índice I(H).  
+4. Validar en campo qué tipo de intervención conviene: nueva unidad, ampliación de servicios, brigadas móviles o mejor conexión territorial.  
+5. Actualizar el análisis con nuevas bases públicas para dar seguimiento en el tiempo.
+        """
+    )
+
+    st.success(
+        "La propuesta de valor es convertir el TDA en una herramienta práctica para priorizar inversión en salud pública "
+        "con evidencia territorial y social."
+    )
 
     st.divider()
 
-    
+    # ══════════════════════════════════════════════════════════════════════════
+    # 5. CIERRE EJECUTIVO
+    # ══════════════════════════════════════════════════════════════════════════
 
-    # ── Cierre ────────────────────────────────────────────────────────────────
+    st.subheader("4 · Cierre ejecutivo")
+
     st.markdown(
-        "<div style='background:#2d3436;color:#dfe6e9;padding:20px 24px;"
-        "border-radius:8px;text-align:center'>"
-        "<b style='font-size:1.1em'>Síntesis del análisis — Salud pública CDMX</b><br>"
-        "<span style='font-size:0.9em'>El tablero integra datos abiertos, visualización territorial, "
-        "análisis de cobertura, persistencia de huecos y priorización social para construir "
-        "un diagnóstico accionable. El resultado no solo representa un mapa puntos: es una ruta "
-        "para identificar zonas candidatas de intervención, justificar prioridades y comunicar "
-        "hallazgos con evidencia reproducible.</span><br><br>"
-        "<small>Fuentes: DENUE 2025 (INEGI) · CONEVAL 2020 · IDS EVALUA CDMX · Censo 2020 (INEGI)</small>"
-        "</div>",
+        f"<div style='background:#2d3436;color:#dfe6e9;padding:20px 24px;"
+        f"border-radius:8px;text-align:center'>"
+        f"<b>Síntesis final</b><br>"
+        f"<span style='font-size:0.92em'>El tablero demuestra que TDA permite pasar de un mapa descriptivo "
+        f"de unidades de salud a una estrategia de intervención. Su valor está en detectar brechas estructurales, "
+        f"medir su persistencia y priorizarlas con variables sociales para orientar decisiones públicas con evidencia.</span>"
+        f"<br><br><small>Fuentes: DENUE 2025 (INEGI) · CONEVAL 2020 · IDS EVALUA CDMX · Censo 2020 (INEGI)</small>"
+        f"</div>",
         unsafe_allow_html=True,
     )
-
 
 
 #deffer
