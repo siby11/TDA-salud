@@ -1968,18 +1968,21 @@ $$I(H_i) = 0.40 \\cdot P_i + 0.25 \\cdot B_i + 0.15 \\cdot D_i + 0.10 \\cdot R_i
 
 | Variable | Descripción | Fuente | Peso |
 |---|---|---|---|
-| P_i | Persistencia topológica normalizada (death − birth) / max | Ripser / TDA | 0.40 |
-| B_i | Bajo desarrollo social normalizado (1 − IDS_norm) | IDS EVALUA CDMX | 0.25 |
-| D_i | Densidad poblacional normalizada (pob / km²) | IDS × CONEVAL | 0.15 |
+| P_i | Persistencia topológica normalizada | Ripser / TDA | 0.40 |
+| B_i | Bajo desarrollo social normalizado | IDS EVALUA CDMX | 0.25 |
+| D_i | Densidad poblacional normalizada | IDS × CONEVAL | 0.15 |
 | R_i | Rezago social normalizado | CONEVAL 2020 | 0.10 |
 | N_i | Proporción de NBI normalizada | IDS EVALUA CDMX | 0.10 |
 
-**Asignación espacial:** el centroide de cada hueco se estima a partir de los vértices de su clase homológica.
-La AGEB con centroide más próximo aporta las variables sociales. Si el AGEB está a más de ε km,
-el contexto se marca como *Aproximado*.
+**Ponderaciones del análisis de sensibilidad:**
 
-**Clasificación interior/borde:** un hueco se considera interior si su centroide está a más de ε km
-del casco convexo de los puntos analizados; de lo contrario, puede ser un artefacto del borde del área.
+| Escenario | P_i Persistencia | B_i Bajo desarrollo IDS | D_i Densidad | R_i Rezago social | N_i NBI |
+|---|---:|---:|---:|---:|---:|
+| Base | 0.40 | 0.25 | 0.15 | 0.10 | 0.10 |
+| Topológico | 0.55 | 0.15 | 0.10 | 0.10 | 0.10 |
+| Social | 0.30 | 0.30 | 0.15 | 0.10 | 0.15 |
+| Densidad | 0.35 | 0.20 | 0.25 | 0.10 | 0.10 |
+
         """)
 
     st.divider()
