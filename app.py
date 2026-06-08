@@ -1297,360 +1297,384 @@ with tab_complejos:
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB PERSISTENCIA HOMOLÓGICA
 # ═══════════════════════════════════════════════════════════════════════════════
-    with tab_persist:
+with tab_persist:
 
-        st.header("Persistencia Homológica")
-        st.caption(
-            "Análisis detallado de las características topológicas persistentes de la red de salud pública. "
-            "Se identifican componentes conexas (H₀), huecos (H₁) y su relación con la cobertura y el rezago social."
-        )
-
-        # ── Controles ─────────────────────────────────────────────────────────────
-        pa, pb, pc, pd0 = st.columns([2, 2, 2, 2])
-        with pa:
-            mun_list_p = ["CDMX completa"] + sorted(denue["municipio"].unique().tolist())
-            mun_p = st.selectbox("Alcaldía", mun_list_p, key="mun_persist")
-        with pb:
-            sector_opts_p = sorted(denue["sector"].dropna().unique().tolist())
-            sector_p = st.selectbox("Sector", sector_opts_p, index=sector_opts_p.index("Público") if "Público" in sector_opts_p else 0, key="sector_persist")
-        with pc:
-            subsec_opts_p = ["Todos los subsectores"] + sorted(
-                denue[denue["sector"] == sector_p]["subsector"].dropna().unique().tolist()
-            )
-            subsec_p = st.selectbox("Subsector", subsec_opts_p, key="subsec_persist")
-        with pd0:
-            max_pts_p = st.slider("Máx. puntos", 50, 2500, 2100, 50, key="maxpts_persist")
-
-        # ── Filtrado ──────────────────────────────────────────────────────────────
-        pub_p = denue[denue["sector"] == sector_p].dropna(subset=["latitud", "longitud"])
-        if mun_p != "CDMX completa":
-            pub_p = pub_p[pub_p["municipio"] == mun_p]
-        if subsec_p != "Todos los subsectores":
-            pub_p = pub_p[pub_p["subsector"] == subsec_p]
-        n_univ_p = len(pub_p)
-        if n_univ_p > max_pts_p:
-            pub_p = pub_p.sample(max_pts_p, random_state=42)
-            st.caption(f" Muestra de {max_pts_p} de {n_univ_p} unidades.")
-
-        pts_p  = pub_p[["latitud", "longitud"]].values
-        if len(pts_p) < 5:
-            st.warning("Muy pocas unidades para el análisis. Amplía el filtro.")
-            st.stop()
-
-        # ── Cómputo TDA completo (antes del slider para calcular μ) ──────────────
-        with st.spinner("Calculando persistencia…"):
-            pts_p_key = tuple(map(tuple, pts_p))
-            dgms_raw, D_p_list, h1_centers = _compute_tda_full(pts_p_key)
-            D_p = np.array(D_p_list)
-
-        h0_p = np.array(dgms_raw[0])
-        h1_p = np.array(dgms_raw[1]) if len(dgms_raw[1]) else np.empty((0, 2))
-        max_ep = min(float(D_p.max()) if D_p.size else 15.0, 15.0)
-
-        h1_pers = (h1_p[:, 1] - h1_p[:, 0]) if len(h1_p) else np.array([])
-
-        # ── Estadísticas de vida de los huecos ────────────────────────────────────
-        h1_pers_fin = h1_pers[~np.isinf(h1_pers)] if len(h1_pers) else np.array([])
-        if len(h1_pers_fin) >= 2:
-            mu_pers    = float(h1_pers_fin.mean())
-            sigma_pers = float(h1_pers_fin.std())
-            thresh_sug = mu_pers + 0.5 * sigma_pers   # μ + ½σ como umbral estadístico
-            # Hueco representativo: el más cercano a la media
-            idx_repr   = int(np.argmin(np.abs(h1_pers_fin - mu_pers)))
-        else:
-            mu_pers = sigma_pers = thresh_sug = 0.0
-            idx_repr = 0
-
-        # ── Controles fila 2 — umbral default = μ vida H₁ ────────────────────────
-        _thresh_default = float(np.round(np.clip(mu_pers, 0.1, 3.0), 1)) if mu_pers > 0 else 0.5
-        pd1, pd2 = st.columns([3, 2])
-        with pd1:
-            thresh = st.slider(
-                "Umbral de persistencia significativa (km)",
-                min_value=0.1, max_value=3.0, value=_thresh_default, step=0.1,
-                help=f"Huecos con persistencia ≥ umbral se consideran reales. Default = μ vida H₁ ({mu_pers:.2f} km).",
-            )
-        with pd2:
-            eps_p = st.slider("ε de referencia (km)", 0.25, 8.0, 1.5, 0.25, key="eps_persist")
-
-        h1_sig  = h1_p[h1_pers >= thresh] if len(h1_p) else np.empty((0, 2))
-        n_sig   = len(h1_sig)
-
-        # ── KPIs ──────────────────────────────────────────────────────────────────
-        kp1, kp2, kp3, kp4 = st.columns(4)
-        kp1.metric("Unidades analizadas", f"{len(pts_p):,}")
-        kp2.metric("Features H₁ totales", len(h1_p))
-        kp3.metric(f"Huecos significativos (≥{thresh} km)", n_sig)
-        if len(h1_pers):
-            kp4.metric("Persistencia H₁ máxima", f"{h1_pers.max():.2f} km")
-        else:
-            kp4.metric("Persistencia H₁ máxima", "—")
-
-        # ── KPIs estadísticos de vida ──────────────────────────────────────────────
-        if len(h1_pers_fin) >= 2:
-            sk1, sk2, sk3, sk4 = st.columns(4)
-            sk1.metric("Vida media H₁ (μ)", f"{mu_pers:.3f} km")
-            sk2.metric("Desv. estándar (σ)", f"{sigma_pers:.3f} km")
-            sk3.metric("Umbral sugerido (μ + ½σ)", f"{thresh_sug:.3f} km",
-                    delta=f"{'↑' if thresh_sug > thresh else '↓'} vs manual {thresh:.2f} km",
-                    delta_color="off")
-            sk4.metric("Hueco representativo", f"H₁ #{idx_repr + 1}",
-                    delta=f"persist. {h1_pers_fin[idx_repr]:.3f} km", delta_color="off")
-
-        st.divider()
-
-        # ══════════════════════════════════════════════════════════════════════════
-        # A. DIAGRAMA DE PERSISTENCIA (avanzado)
-        # ══════════════════════════════════════════════════════════════════════════
-        st.subheader("A · Diagrama de Persistencia")
-
-        rows_pers = []
-        for b, d in h0_p:
-            d_p = min(float(d), max_ep * 1.05) if np.isinf(d) else float(d)
-            rows_pers.append({"Dim": "H₀ Componentes", "Nacimiento": float(b),
-                            "Muerte": d_p, "Persistencia": d_p - float(b)})
-        for b, d in h1_p:
-            d_p = min(float(d), max_ep * 1.05) if np.isinf(d) else float(d)
-            pers = d_p - float(b)
-            rows_pers.append({"Dim": "H₁ Huecos", "Nacimiento": float(b),
-                            "Muerte": d_p, "Persistencia": pers,
-                            "Significativo": "Sí" if pers >= thresh else "No"})
-
-        df_pers = pd.DataFrame(rows_pers)
-        fig_pd = px.scatter(
-            df_pers, x="Nacimiento", y="Muerte", color="Dim",
-            color_discrete_map={"H₀ Componentes": "#e74c3c", "H₁ Huecos": "#3498db"},
-            size="Persistencia", size_max=18, opacity=0.75,
-            hover_data={"Persistencia": ":.3f"},
-            title="Diagrama de Persistencia — H₀ y H₁",
-            labels={"Nacimiento": "Nacimiento ε (km)", "Muerte": "Muerte ε (km)"},
-            height=450,
-        )
-        lim = max_ep * 1.05
-        # Diagonal (persistencia = 0, ruido)
-        fig_pd.add_shape(type="line", x0=0, y0=0, x1=lim, y1=lim,
-                        line=dict(color="gray", dash="dot", width=1))
-        # Umbral de significancia (persistencia = thresh)
-        fig_pd.add_shape(type="line", x0=0, y0=thresh, x1=lim - thresh, y1=lim,
-                        line=dict(color="#f39c12", dash="dash", width=1.5))
-        # Línea ε referencia
-        fig_pd.add_vline(x=eps_p, line_dash="dash", line_color="green", opacity=0.6,
-                        annotation_text=f"ε={eps_p}km", annotation_position="top right")
-        # Anotaciones de zonas
-        fig_pd.add_annotation(x=lim * 0.08, y=lim * 0.97,
-                            text="◀ Ruido (baja persistencia)", showarrow=False,
-                            font=dict(color="gray", size=11))
-        fig_pd.add_annotation(x=lim * 0.15, y=lim * 0.6,
-                            text="Huecos<br>significativos ▶", showarrow=False,
-                            font=dict(color="#f39c12", size=11))
-        fig_pd.update_layout(margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig_pd, width="stretch")
-        st.caption(
-            "**Diagonal punteada gris** = persistencia cero (ruido). "
-            "**Línea naranja** = umbral de significancia. "
-            "Los puntos azules (H₁) alejados de la diagonal son **huecos topológicos reales**."
-        )
-
-        st.divider()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # B. CURVAS DE BETTI
-    # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("B · Curvas de Números de Betti")
+    st.header("Persistencia Homológica")
     st.caption(
-        "β₀(ε) = componentes conexas activas. β₁(ε) = huecos activos. "
-        "El pico de β₁ indica el radio donde existe la mayor cantidad de huecos simultáneamente."
+        "Análisis detallado de las características topológicas persistentes de la red de salud pública. "
+        "Se identifican componentes conexas (H₀), huecos (H₁) y su relación con la cobertura y el rezago social."
     )
 
-    eps_range = np.linspace(0, max_ep, 250)
-    b0_curve, b1_curve = _betti_curves(h0_p, h1_p, eps_range)
-
-    df_betti = pd.DataFrame({
-        "ε (km)": np.concatenate([eps_range, eps_range]),
-        "Número de Betti": np.concatenate([b0_curve, b1_curve]),
-        "Dimensión": ["β₀ – Componentes"] * len(eps_range) + ["β₁ – Huecos"] * len(eps_range),
-    })
-    fig_betti = px.line(
-        df_betti, x="ε (km)", y="Número de Betti", color="Dimensión",
-        color_discrete_map={"β₀ – Componentes": "#e74c3c", "β₁ – Huecos": "#3498db"},
-        title="Evolución de los Números de Betti con ε",
-        height=380,
-    )
-    # Línea ε referencia
-    fig_betti.add_vline(x=eps_p, line_dash="dash", line_color="green", opacity=0.6,
-                        annotation_text=f"ε={eps_p}", annotation_position="top right")
-    # Marcar pico de β₁
-    if b1_curve.max() > 0:
-        peak_idx = int(b1_curve.argmax())
-        peak_eps = float(eps_range[peak_idx])
-        peak_val = int(b1_curve[peak_idx])
-        fig_betti.add_annotation(
-            x=peak_eps, y=peak_val,
-            text=f"Pico β₁={peak_val}<br>ε={peak_eps:.2f}km",
-            showarrow=True, arrowhead=2,
-            font=dict(color="#3498db", size=11),
-            bgcolor="rgba(255,255,255,0.8)",
+    # ── Controles ─────────────────────────────────────────────────────────────
+    pa, pb, pc, pd0 = st.columns([2, 2, 2, 2])
+    with pa:
+        mun_list_p = ["CDMX completa"] + sorted(denue["municipio"].unique().tolist())
+        mun_p = st.selectbox("Alcaldía", mun_list_p, key="mun_persist")
+    with pb:
+        sector_opts_p = sorted(denue["sector"].dropna().unique().tolist())
+        sector_p = st.selectbox("Sector", sector_opts_p, index=sector_opts_p.index("Público") if "Público" in sector_opts_p else 0, key="sector_persist")
+    with pc:
+        subsec_opts_p = ["Todos los subsectores"] + sorted(
+            denue[denue["sector"] == sector_p]["subsector"].dropna().unique().tolist()
         )
-    fig_betti.update_layout(margin=dict(l=0, r=0, t=40, b=0))
-    st.plotly_chart(fig_betti, width="stretch")
+        subsec_p = st.selectbox("Subsector", subsec_opts_p, key="subsec_persist")
+    with pd0:
+        max_pts_p = st.slider("Máx. puntos", 50, 2500, 2100, 50, key="maxpts_persist")
 
-    st.divider()
+    # ── Filtrado ──────────────────────────────────────────────────────────────
+    pub_p = denue[denue["sector"] == sector_p].dropna(subset=["latitud", "longitud"])
+    if mun_p != "CDMX completa":
+        pub_p = pub_p[pub_p["municipio"] == mun_p]
+    if subsec_p != "Todos los subsectores":
+        pub_p = pub_p[pub_p["subsector"] == subsec_p]
+    n_univ_p = len(pub_p)
+    if n_univ_p > max_pts_p:
+        pub_p = pub_p.sample(max_pts_p, random_state=42)
+        st.caption(f" Muestra de {max_pts_p} de {n_univ_p} unidades.")
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # C. ANÁLISIS DE FEATURES PERSISTENTES
-    # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("C · Análisis de Features Persistentes")
+    pts_p  = pub_p[["latitud", "longitud"]].values
+    if len(pts_p) < 5:
+        st.warning("Muy pocas unidades para el análisis. Amplía el filtro.")
+        st.stop()
 
-    col_tab = st.container()
+    # ── Cómputo TDA completo (antes del slider para calcular μ) ──────────────
+    with st.spinner("Calculando persistencia…"):
+        pts_p_key = tuple(map(tuple, pts_p))
+        dgms_raw, D_p_list, h1_centers = _compute_tda_full(pts_p_key)
+        D_p = np.array(D_p_list)
 
-    _hidden_tab_persist = '''
-    with st.container():
-        # Histograma de persistencia
-        rows_hist = []
-        for b, d in h0_p:
-            p = (min(float(d), max_ep) if np.isinf(d) else float(d)) - float(b)
-            rows_hist.append({"Persistencia (km)": p, "Dimensión": "H₀ Componentes"})
-        for b, d in h1_p:
-            p = (min(float(d), max_ep) if np.isinf(d) else float(d)) - float(b)
-            rows_hist.append({"Persistencia (km)": p, "Dimensión": "H₁ Huecos"})
-        df_hist = pd.DataFrame(rows_hist)
+    h0_p = np.array(dgms_raw[0])
+    h1_p = np.array(dgms_raw[1]) if len(dgms_raw[1]) else np.empty((0, 2))
+    max_ep = min(float(D_p.max()) if D_p.size else 15.0, 15.0)
 
-        fig_hist = px.histogram(
-            df_hist, x="Persistencia (km)", color="Dimensión",
-            color_discrete_map={"H₀ Componentes": "#e74c3c", "H₁ Huecos": "#3498db"},
-            barmode="overlay", opacity=0.7, nbins=40,
-            title="Distribución de Persistencia — H₀ y H₁",
-            height=360,
+    h1_pers = (h1_p[:, 1] - h1_p[:, 0]) if len(h1_p) else np.array([])
+
+    # ── Estadísticas de vida de los huecos ────────────────────────────────────
+    h1_pers_fin = h1_pers[~np.isinf(h1_pers)] if len(h1_pers) else np.array([])
+    if len(h1_pers_fin) >= 2:
+        mu_pers    = float(h1_pers_fin.mean())
+        sigma_pers = float(h1_pers_fin.std())
+        thresh_sug = mu_pers + 0.5 * sigma_pers   # μ + ½σ como umbral estadístico
+        # Hueco representativo: el más cercano a la media
+        idx_repr   = int(np.argmin(np.abs(h1_pers_fin - mu_pers)))
+    else:
+        mu_pers = sigma_pers = thresh_sug = 0.0
+        idx_repr = 0
+
+    # ── Controles fila 2 — umbral default = μ + ½σ vida H₁ ──────────────────
+    _thresh_default = float(np.round(np.clip(thresh_sug, 0.1, 3.0), 1)) if thresh_sug > 0 else 0.5
+    pd1, pd2 = st.columns([3, 2])
+    with pd1:
+        thresh = st.slider(
+            "Umbral de persistencia significativa (km)",
+            min_value=0.1, max_value=3.0, value=_thresh_default, step=0.1,
+            help=f"Auto-calculado como μ + ½σ de las vidas H₁ = {thresh_sug:.3f} km. Ajusta manualmente si lo requieres.",
         )
-        fig_hist.add_vline(x=thresh, line_dash="dash", line_color="#f39c12",
-                           annotation_text=f"Umbral {thresh} km",
-                           annotation_position="top right")
-        fig_hist.update_layout(margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig_hist, width="stretch")
-        st.caption(
-            "Las barras a la **izquierda del umbral** son ruido topológico. "
-            "Las barras a la **derecha** representan estructuras persistentes candidatas (huecos, clusters aislados)."
-        )
+    with pd2:
+        eps_p = st.slider("ε de referencia (km)", 0.25, 8.0, 1.5, 0.25, key="eps_persist")
 
-    '''
+    # ── Recuadro colapsable con la fórmula del umbral ─────────────────────────
+    with st.expander("📐 ¿Cómo se calcula el umbral sugerido?", expanded=False):
+        if len(h1_pers_fin) >= 2:
+            st.markdown(f"""
+**Fórmula:**
 
-    with col_tab:
-        st.markdown("**Top huecos H₁ por persistencia**")
-        if len(h1_p):
-            # Distancias al borde del casco convexo
-            bd = _border_dists(h1_centers[:len(h1_p)], pts_p)
-            df_h1_tab = pd.DataFrame({
-                "Nacimiento (km)":   h1_p[:, 0].round(3),
-                "Muerte (km)":       np.where(np.isinf(h1_p[:, 1]), np.inf, h1_p[:, 1]).round(3),
-                "Persistencia (km)": h1_pers.round(3),
-                "Dist. borde (km)":  bd.round(2),
-            }).sort_values("Persistencia (km)", ascending=False).head(15).reset_index(drop=True)
-            df_h1_tab.index += 1
-            df_h1_tab["Tipo"] = df_h1_tab.apply(
-                lambda r: ("✓ Interior" if r["Dist. borde (km)"] >= eps_p else " Borde")
-                          if r["Persistencia (km)"] >= thresh else "",
-                axis=1,
-            )
-            st.dataframe(df_h1_tab, use_container_width=True, height=340)
-            st.caption(" Borde = hueco cerca del límite del área analizada; puede ser artefacto por efecto de frontera.")
+$$\\text{{Umbral}} = \\mu_{{H_1}} + \\tfrac{{1}}{{2}}\\,\\sigma_{{H_1}}$$
+
+| Estadístico | Valor |
+|---|---|
+| Media de vidas H₁ &nbsp;(μ) | **{mu_pers:.4f} km** |
+| Desviación estándar &nbsp;(σ) | **{sigma_pers:.4f} km** |
+| ½ σ | **{0.5 * sigma_pers:.4f} km** |
+| **Umbral = μ + ½σ** | **{thresh_sug:.4f} km** |
+
+**¿Por qué μ + ½σ?**
+La media μ representa el promedio de vida de todos los huecos H₁. Sumar ½σ desplaza el umbral hacia los huecos con vida *por encima de lo típico*, filtrando el ruido topológico sin ser demasiado restrictivo. Un umbral igual a μ capturaría ~50 % de los huecos; con ½σ adicional quedan solo los más persistentes (~30–35 %, asumiendo distribución aproximadamente normal).
+
+> El umbral se **recalcula automáticamente** al cambiar los filtros de alcaldía, sector o subsector.
+""")
         else:
-            st.info("Sin features H₁ en la selección actual.")
+            st.info("No hay suficientes huecos H₁ para calcular estadísticas de vida (se necesitan ≥ 2).")
+
+    h1_sig  = h1_p[h1_pers >= thresh] if len(h1_p) else np.empty((0, 2))
+    n_sig   = len(h1_sig)
+
+    # ── KPIs ──────────────────────────────────────────────────────────────────
+    kp1, kp2, kp3, kp4 = st.columns(4)
+    kp1.metric("Unidades analizadas", f"{len(pts_p):,}")
+    kp2.metric("Features H₁ totales", len(h1_p))
+    kp3.metric(f"Huecos significativos (≥{thresh} km)", n_sig)
+    if len(h1_pers):
+        kp4.metric("Persistencia H₁ máxima", f"{h1_pers.max():.2f} km")
+    else:
+        kp4.metric("Persistencia H₁ máxima", "—")
+
+    # ── KPIs estadísticos de vida ──────────────────────────────────────────────
+    if len(h1_pers_fin) >= 2:
+        sk1, sk2, sk3, sk4 = st.columns(4)
+        sk1.metric("Vida media H₁ (μ)", f"{mu_pers:.3f} km")
+        sk2.metric("Desv. estándar (σ)", f"{sigma_pers:.3f} km")
+        _diff = thresh - thresh_sug
+        sk3.metric("Umbral sugerido (μ + ½σ)", f"{thresh_sug:.3f} km",
+                delta=f"Manual: {thresh:.2f} km ({'+' if _diff >= 0 else ''}{_diff:.2f})" if abs(_diff) > 0.01 else "= umbral actual",
+                delta_color="off")
+        sk4.metric("Hueco representativo", f"H₁ #{idx_repr + 1}",
+                delta=f"persist. {h1_pers_fin[idx_repr]:.3f} km", delta_color="off")
 
     st.divider()
 
-    # # ══════════════════════════════════════════════════════════════════════════
-    # # D. INTERPRETACIÓN
-    # # ══════════════════════════════════════════════════════════════════════════
-    # st.subheader("D · Interpretación: Conectividad, Cobertura e Implicaciones")
+    # ══════════════════════════════════════════════════════════════════════════
+    # A. DIAGRAMA DE PERSISTENCIA (avanzado)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("A · Diagrama de Persistencia")
 
-    # # Rezago en zonas sin cobertura
-    # if mun_p == "CDMX completa":
-    #     coneval_p = coneval
+    rows_pers = []
+    for b, d in h0_p:
+        d_p = min(float(d), max_ep * 1.05) if np.isinf(d) else float(d)
+        rows_pers.append({"Dim": "H₀ Componentes", "Nacimiento": float(b),
+                        "Muerte": d_p, "Persistencia": d_p - float(b)})
+    for b, d in h1_p:
+        d_p = min(float(d), max_ep * 1.05) if np.isinf(d) else float(d)
+        pers = d_p - float(b)
+        rows_pers.append({"Dim": "H₁ Huecos", "Nacimiento": float(b),
+                        "Muerte": d_p, "Persistencia": pers,
+                        "Significativo": "Sí" if pers >= thresh else "No"})
+
+    df_pers = pd.DataFrame(rows_pers)
+    fig_pd = px.scatter(
+        df_pers, x="Nacimiento", y="Muerte", color="Dim",
+        color_discrete_map={"H₀ Componentes": "#e74c3c", "H₁ Huecos": "#3498db"},
+        size="Persistencia", size_max=18, opacity=0.75,
+        hover_data={"Persistencia": ":.3f"},
+        title="Diagrama de Persistencia — H₀ y H₁",
+        labels={"Nacimiento": "Nacimiento ε (km)", "Muerte": "Muerte ε (km)"},
+        height=450,
+    )
+    lim = max_ep * 1.05
+    # Diagonal (persistencia = 0, ruido)
+    fig_pd.add_shape(type="line", x0=0, y0=0, x1=lim, y1=lim,
+                    line=dict(color="gray", dash="dot", width=1))
+    # Umbral de significancia (persistencia = thresh)
+    fig_pd.add_shape(type="line", x0=0, y0=thresh, x1=lim - thresh, y1=lim,
+                    line=dict(color="#f39c12", dash="dash", width=1.5))
+    # Línea ε referencia
+    fig_pd.add_vline(x=eps_p, line_dash="dash", line_color="green", opacity=0.6,
+                    annotation_text=f"ε={eps_p}km", annotation_position="top right")
+    # Anotaciones de zonas
+    fig_pd.add_annotation(x=lim * 0.08, y=lim * 0.97,
+                        text="◀ Ruido (baja persistencia)", showarrow=False,
+                        font=dict(color="gray", size=11))
+    fig_pd.add_annotation(x=lim * 0.15, y=lim * 0.6,
+                        text="Huecos<br>significativos ▶", showarrow=False,
+                        font=dict(color="#f39c12", size=11))
+    fig_pd.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+    st.plotly_chart(fig_pd, width="stretch")
+    st.caption(
+        "**Diagonal punteada gris** = persistencia cero (ruido). "
+        "**Línea naranja** = umbral de significancia. "
+        "Los puntos azules (H₁) alejados de la diagonal son **huecos topológicos reales**."
+    )
+
+    st.divider()
+
+# ══════════════════════════════════════════════════════════════════════════
+# B. CURVAS DE BETTI
+# ══════════════════════════════════════════════════════════════════════════
+st.subheader("B · Curvas de Números de Betti")
+st.caption(
+    "β₀(ε) = componentes conexas activas. β₁(ε) = huecos activos. "
+    "El pico de β₁ indica el radio donde existe la mayor cantidad de huecos simultáneamente."
+)
+
+eps_range = np.linspace(0, max_ep, 250)
+b0_curve, b1_curve = _betti_curves(h0_p, h1_p, eps_range)
+
+df_betti = pd.DataFrame({
+    "ε (km)": np.concatenate([eps_range, eps_range]),
+    "Número de Betti": np.concatenate([b0_curve, b1_curve]),
+    "Dimensión": ["β₀ – Componentes"] * len(eps_range) + ["β₁ – Huecos"] * len(eps_range),
+})
+fig_betti = px.line(
+    df_betti, x="ε (km)", y="Número de Betti", color="Dimensión",
+    color_discrete_map={"β₀ – Componentes": "#e74c3c", "β₁ – Huecos": "#3498db"},
+    title="Evolución de los Números de Betti con ε",
+    height=380,
+)
+# Línea ε referencia
+fig_betti.add_vline(x=eps_p, line_dash="dash", line_color="green", opacity=0.6,
+                    annotation_text=f"ε={eps_p}", annotation_position="top right")
+# Marcar pico de β₁
+if b1_curve.max() > 0:
+    peak_idx = int(b1_curve.argmax())
+    peak_eps = float(eps_range[peak_idx])
+    peak_val = int(b1_curve[peak_idx])
+    fig_betti.add_annotation(
+        x=peak_eps, y=peak_val,
+        text=f"Pico β₁={peak_val}<br>ε={peak_eps:.2f}km",
+        showarrow=True, arrowhead=2,
+        font=dict(color="#3498db", size=11),
+        bgcolor="rgba(255,255,255,0.8)",
+    )
+fig_betti.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+st.plotly_chart(fig_betti, width="stretch")
+
+st.divider()
+
+# ══════════════════════════════════════════════════════════════════════════
+# C. ANÁLISIS DE FEATURES PERSISTENTES
+# ══════════════════════════════════════════════════════════════════════════
+st.subheader("C · Análisis de Features Persistentes")
+
+col_tab = st.container()
+
+_hidden_tab_persist = '''
+with st.container():
+    # Histograma de persistencia
+    rows_hist = []
+    for b, d in h0_p:
+        p = (min(float(d), max_ep) if np.isinf(d) else float(d)) - float(b)
+        rows_hist.append({"Persistencia (km)": p, "Dimensión": "H₀ Componentes"})
+    for b, d in h1_p:
+        p = (min(float(d), max_ep) if np.isinf(d) else float(d)) - float(b)
+        rows_hist.append({"Persistencia (km)": p, "Dimensión": "H₁ Huecos"})
+    df_hist = pd.DataFrame(rows_hist)
+
+    fig_hist = px.histogram(
+        df_hist, x="Persistencia (km)", color="Dimensión",
+        color_discrete_map={"H₀ Componentes": "#e74c3c", "H₁ Huecos": "#3498db"},
+        barmode="overlay", opacity=0.7, nbins=40,
+        title="Distribución de Persistencia — H₀ y H₁",
+        height=360,
+    )
+    fig_hist.add_vline(x=thresh, line_dash="dash", line_color="#f39c12",
+                       annotation_text=f"Umbral {thresh} km",
+                       annotation_position="top right")
+    fig_hist.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+    st.plotly_chart(fig_hist, width="stretch")
+    st.caption(
+        "Las barras a la **izquierda del umbral** son ruido topológico. "
+        "Las barras a la **derecha** representan estructuras persistentes candidatas (huecos, clusters aislados)."
+    )
+
+'''
+
+with col_tab:
+    st.markdown("**Top huecos H₁ por persistencia**")
+    if len(h1_p):
+        # Distancias al borde del casco convexo
+        bd = _border_dists(h1_centers[:len(h1_p)], pts_p)
+        df_h1_tab = pd.DataFrame({
+            "Nacimiento (km)":   h1_p[:, 0].round(3),
+            "Muerte (km)":       np.where(np.isinf(h1_p[:, 1]), np.inf, h1_p[:, 1]).round(3),
+            "Persistencia (km)": h1_pers.round(3),
+            "Dist. borde (km)":  bd.round(2),
+        }).sort_values("Persistencia (km)", ascending=False).head(15).reset_index(drop=True)
+        df_h1_tab.index += 1
+        df_h1_tab["Tipo"] = df_h1_tab.apply(
+            lambda r: ("✓ Interior" if r["Dist. borde (km)"] >= eps_p else " Borde")
+                      if r["Persistencia (km)"] >= thresh else "",
+            axis=1,
+        )
+        st.dataframe(df_h1_tab, use_container_width=True, height=340)
+        st.caption(" Borde = hueco cerca del límite del área analizada; puede ser artefacto por efecto de frontera.")
+    else:
+        st.info("Sin features H₁ en la selección actual.")
+
+st.divider()
+
+# # ══════════════════════════════════════════════════════════════════════════
+# # D. INTERPRETACIÓN
+# # ══════════════════════════════════════════════════════════════════════════
+# st.subheader("D · Interpretación: Conectividad, Cobertura e Implicaciones")
+
+# # Rezago en zonas sin cobertura
+# if mun_p == "CDMX completa":
+#     coneval_p = coneval
+# else:
+#     cve_p = coneval["cvegeo"].astype(str).str[2:5]
+#     coneval_p = coneval[cve_p == MUN_INV.get(mun_p, "000")]
+
+# ageb_p = coneval_p.dropna(subset=["centroide_lat", "centroide_lon"])
+# ageb_pts_p = ageb_p[["centroide_lat", "centroide_lon"]].values
+
+# if len(ageb_pts_p) > 0 and len(pts_p) > 0:
+#     md_p = np.array(_compute_coverage(pts_p_key, tuple(map(tuple, ageb_pts_p))))
+#     ageb_p = ageb_p.copy()
+#     ageb_p["dist_min"] = md_p
+#     ageb_p["cobertura"] = np.where(md_p <= eps_p, "Cubierta", "Sin cobertura")
+#     pct_p = float((md_p <= eps_p).mean() * 100)
+#     n_unc_p = int((md_p > eps_p).sum())
+
+#     col_int1, col_int2 = st.columns(2)
+
+#     with col_int1:
+#         # Rezago: cubierta vs sin cobertura
+#         rez_ord = ["Muy bajo", "Bajo", "Medio", "Alto", "Muy alto"]
+#         df_int = (
+#             ageb_p.groupby(["cobertura", "grado_rezago_social"])
+#             .size().reset_index(name="n")
+#         )
+#         df_int["grado_rezago_social"] = pd.Categorical(
+#             df_int["grado_rezago_social"], categories=rez_ord, ordered=True
+#         )
+#         # Normalizar a porcentaje dentro de cada grupo
+#         totals = df_int.groupby("cobertura")["n"].transform("sum")
+#         df_int["pct"] = (df_int["n"] / totals * 100).round(1)
+#         fig_int = px.bar(
+#             df_int.sort_values("grado_rezago_social"),
+#             x="grado_rezago_social", y="pct", color="cobertura",
+#             color_discrete_map={"Cubierta": "#2ecc71", "Sin cobertura": "#e74c3c"},
+#             barmode="group",
+#             title=f"Rezago social: % dentro de AGEBs cubiertas vs sin cobertura (ε={eps_p}km)",
+#             labels={"grado_rezago_social": "Rezago", "pct": "% de AGEBs en grupo", "cobertura": ""},
+#             height=380,
+#         )
+#         fig_int.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+#         st.plotly_chart(fig_int, width="stretch")
+
+#     with col_int2:
+#         # Distancia media al servicio por grado de rezago
+#         df_dist_rez = ageb_p.groupby("grado_rezago_social")["dist_min"].mean().reset_index()
+#         df_dist_rez.columns = ["Rezago", "Distancia media (km)"]
+#         df_dist_rez["Rezago"] = pd.Categorical(
+#             df_dist_rez["Rezago"], categories=rez_ord, ordered=True
+#         )
+#         df_dist_rez = df_dist_rez.sort_values("Rezago")
+#         fig_dist = px.bar(
+#             df_dist_rez, x="Rezago", y="Distancia media (km)",
+#             color="Rezago", color_discrete_map=COLORS,
+#             title=f"Distancia media a unidad {sector_p.lower()} por grado de rezago",
+#             labels={"Rezago": "", "Distancia media (km)": "km promedio"},
+#             height=380,
+#         )
+#         fig_dist.update_layout(showlegend=False, margin=dict(l=0, r=0, t=40, b=0))
+#         fig_dist.add_hline(y=eps_p, line_dash="dash", line_color="gray",
+#                            annotation_text=f"ε={eps_p}km", annotation_position="right")
+#         st.plotly_chart(fig_dist, width="stretch")
+
+    # Resumen narrativo dinámico
+    # sinc_p  = ageb_p[ageb_p["cobertura"] == "Sin cobertura"]
+    # top_r_p = sinc_p["grado_rezago_social"].value_counts().idxmax() if len(sinc_p) else "—"
+    # max_dist_rez = df_dist_rez.loc[df_dist_rez["Distancia media (km)"].idxmax(), "Rezago"] if len(df_dist_rez) else "—"
+
+    # if b1_curve.max() > 0:
+    #     peak_eps_val = float(eps_range[b1_curve.argmax()])
     # else:
-    #     cve_p = coneval["cvegeo"].astype(str).str[2:5]
-    #     coneval_p = coneval[cve_p == MUN_INV.get(mun_p, "000")]
+    #     peak_eps_val = 0.0
 
-    # ageb_p = coneval_p.dropna(subset=["centroide_lat", "centroide_lon"])
-    # ageb_pts_p = ageb_p[["centroide_lat", "centroide_lon"]].values
-
-    # if len(ageb_pts_p) > 0 and len(pts_p) > 0:
-    #     md_p = np.array(_compute_coverage(pts_p_key, tuple(map(tuple, ageb_pts_p))))
-    #     ageb_p = ageb_p.copy()
-    #     ageb_p["dist_min"] = md_p
-    #     ageb_p["cobertura"] = np.where(md_p <= eps_p, "Cubierta", "Sin cobertura")
-    #     pct_p = float((md_p <= eps_p).mean() * 100)
-    #     n_unc_p = int((md_p > eps_p).sum())
-
-    #     col_int1, col_int2 = st.columns(2)
-
-    #     with col_int1:
-    #         # Rezago: cubierta vs sin cobertura
-    #         rez_ord = ["Muy bajo", "Bajo", "Medio", "Alto", "Muy alto"]
-    #         df_int = (
-    #             ageb_p.groupby(["cobertura", "grado_rezago_social"])
-    #             .size().reset_index(name="n")
-    #         )
-    #         df_int["grado_rezago_social"] = pd.Categorical(
-    #             df_int["grado_rezago_social"], categories=rez_ord, ordered=True
-    #         )
-    #         # Normalizar a porcentaje dentro de cada grupo
-    #         totals = df_int.groupby("cobertura")["n"].transform("sum")
-    #         df_int["pct"] = (df_int["n"] / totals * 100).round(1)
-    #         fig_int = px.bar(
-    #             df_int.sort_values("grado_rezago_social"),
-    #             x="grado_rezago_social", y="pct", color="cobertura",
-    #             color_discrete_map={"Cubierta": "#2ecc71", "Sin cobertura": "#e74c3c"},
-    #             barmode="group",
-    #             title=f"Rezago social: % dentro de AGEBs cubiertas vs sin cobertura (ε={eps_p}km)",
-    #             labels={"grado_rezago_social": "Rezago", "pct": "% de AGEBs en grupo", "cobertura": ""},
-    #             height=380,
-    #         )
-    #         fig_int.update_layout(margin=dict(l=0, r=0, t=40, b=0))
-    #         st.plotly_chart(fig_int, width="stretch")
-
-    #     with col_int2:
-    #         # Distancia media al servicio por grado de rezago
-    #         df_dist_rez = ageb_p.groupby("grado_rezago_social")["dist_min"].mean().reset_index()
-    #         df_dist_rez.columns = ["Rezago", "Distancia media (km)"]
-    #         df_dist_rez["Rezago"] = pd.Categorical(
-    #             df_dist_rez["Rezago"], categories=rez_ord, ordered=True
-    #         )
-    #         df_dist_rez = df_dist_rez.sort_values("Rezago")
-    #         fig_dist = px.bar(
-    #             df_dist_rez, x="Rezago", y="Distancia media (km)",
-    #             color="Rezago", color_discrete_map=COLORS,
-    #             title=f"Distancia media a unidad {sector_p.lower()} por grado de rezago",
-    #             labels={"Rezago": "", "Distancia media (km)": "km promedio"},
-    #             height=380,
-    #         )
-    #         fig_dist.update_layout(showlegend=False, margin=dict(l=0, r=0, t=40, b=0))
-    #         fig_dist.add_hline(y=eps_p, line_dash="dash", line_color="gray",
-    #                            annotation_text=f"ε={eps_p}km", annotation_position="right")
-    #         st.plotly_chart(fig_dist, width="stretch")
-
-        # Resumen narrativo dinámico
-        # sinc_p  = ageb_p[ageb_p["cobertura"] == "Sin cobertura"]
-        # top_r_p = sinc_p["grado_rezago_social"].value_counts().idxmax() if len(sinc_p) else "—"
-        # max_dist_rez = df_dist_rez.loc[df_dist_rez["Distancia media (km)"].idxmax(), "Rezago"] if len(df_dist_rez) else "—"
-
-        # if b1_curve.max() > 0:
-        #     peak_eps_val = float(eps_range[b1_curve.argmax()])
-        # else:
-        #     peak_eps_val = 0.0
-
-        # st.info(
-        #     f"**Resumen de hallazgos topológicos y sociales**\n\n"
-        #     f"- La red de salud {sector_p.lower()} analizada presenta **{n_sig} huecos H₁ persistentes** "
-        #     f"(persistencia ≥ {thresh} km), que representan zonas sin cobertura estructuralmente relevantes.\n"
-        #     f"- El número máximo de huecos simultáneos (β₁) ocurre a **ε ≈ {peak_eps_val:.2f} km**, "
-        #     f"indicando que ese es el radio crítico de análisis.\n"
-        #     f"- A ε = {eps_p} km, el **{pct_p:.1f}%** de las AGEBs tienen cobertura; "
-        #     f"quedan **{n_unc_p} AGEBs sin cobertura**.\n"
-        #     f"- El grado de rezago más frecuente en AGEBs sin cobertura es **{top_r_p}**, "
-        #     f"y el rezago con mayor distancia media al servicio es **{max_dist_rez}**.\n"
-        #     f"- Esto sugiere que los huecos topológicos detectados no son aleatorios: "
-        #     f"se concentran en zonas de mayor vulnerabilidad social."
-        # )
+    # st.info(
+    #     f"**Resumen de hallazgos topológicos y sociales**\n\n"
+    #     f"- La red de salud {sector_p.lower()} analizada presenta **{n_sig} huecos H₁ persistentes** "
+    #     f"(persistencia ≥ {thresh} km), que representan zonas sin cobertura estructuralmente relevantes.\n"
+    #     f"- El número máximo de huecos simultáneos (β₁) ocurre a **ε ≈ {peak_eps_val:.2f} km**, "
+    #     f"indicando que ese es el radio crítico de análisis.\n"
+    #     f"- A ε = {eps_p} km, el **{pct_p:.1f}%** de las AGEBs tienen cobertura; "
+    #     f"quedan **{n_unc_p} AGEBs sin cobertura**.\n"
+    #     f"- El grado de rezago más frecuente en AGEBs sin cobertura es **{top_r_p}**, "
+    #     f"y el rezago con mayor distancia media al servicio es **{max_dist_rez}**.\n"
+    #     f"- Esto sugiere que los huecos topológicos detectados no son aleatorios: "
+    #     f"se concentran en zonas de mayor vulnerabilidad social."
+    # )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB PRIORIZACIÓN DE HUECOS
