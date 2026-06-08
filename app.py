@@ -1689,7 +1689,7 @@ with tab_prior:
     )
 
     # ── Controles ─────────────────────────────────────────────────────────────
-    pr1, pr2, pr3, pr4, pr5 = st.columns([2, 2, 1, 1, 1])
+    pr1, pr2, pr3, pr4 = st.columns([2, 2, 1, 1])
     with pr1:
         mun_pr = st.selectbox(
             "Alcaldía",
@@ -1702,10 +1702,8 @@ with tab_prior:
         )
         subsec_pr = st.selectbox("Subsector público", subsec_opts_pr, key="subsec_pr")
     with pr3:
-        eps_pr    = st.slider("Radio ε (km)", 0.25, 8.0, 1.5, 0.01, key="eps_pr")
+        eps_pr     = st.slider("Radio ε (km)", 0.25, 8.0, 1.5, 0.01, key="eps_pr")
     with pr4:
-        thresh_pr = st.slider("Umbral persist. (km)", 0.1, 3.0, 0.5, 0.1, key="thresh_pr")
-    with pr5:
         max_pts_pr = st.slider("Máx. puntos", 50, 2500, 2100, 50, key="maxpts_prior")
 
     # ── Preparar datos ─────────────────────────────────────────────────────────
@@ -1756,6 +1754,50 @@ with tab_prior:
         st.stop()
 
     _h1p_pr      = _h1_pr[:, 1] - _h1_pr[:, 0]
+
+    # ── Umbral auto-calculado (μ + ½σ) ────────────────────────────────────────
+    _h1p_pr_fin = _h1p_pr[~np.isinf(_h1p_pr)]
+    if len(_h1p_pr_fin) >= 2:
+        _mu_pr    = float(_h1p_pr_fin.mean())
+        _sigma_pr = float(_h1p_pr_fin.std())
+        _tsug_pr  = _mu_pr + 0.5 * _sigma_pr
+    else:
+        _mu_pr = _sigma_pr = _tsug_pr = 0.0
+    _thresh_pr_default = float(np.round(np.clip(_tsug_pr, 0.1, 3.0), 1)) if _tsug_pr > 0 else 0.5
+
+    _tc1, _tc2 = st.columns([3, 2])
+    with _tc1:
+        thresh_pr = st.slider(
+            "Umbral de persistencia significativa (km)",
+            min_value=0.1, max_value=3.0, value=_thresh_pr_default, step=0.1,
+            key="thresh_pr",
+            help=f"Auto-calculado como μ + ½σ = {_tsug_pr:.3f} km. Ajusta manualmente si lo requieres.",
+        )
+    with _tc2:
+        st.metric("Umbral sugerido (μ + ½σ)", f"{_tsug_pr:.3f} km")
+
+    with st.expander("📐 ¿Cómo se calcula el umbral sugerido?", expanded=False):
+        if len(_h1p_pr_fin) >= 2:
+            _diff_pr = thresh_pr - _tsug_pr
+            _delta_str = f"Manual: {thresh_pr:.2f} km ({'+' if _diff_pr >= 0 else ''}{_diff_pr:.2f})" if abs(_diff_pr) > 0.01 else "*(= sugerido)*"
+            st.markdown(f"""
+**Fórmula:**
+
+$$\\text{{Umbral}} = \\mu_{{H_1}} + \\tfrac{{1}}{{2}}\\,\\sigma_{{H_1}}$$
+
+| Estadístico | Valor |
+|---|---|
+| Media de vidas H₁ &nbsp;(μ) | **{_mu_pr:.4f} km** |
+| Desviación estándar &nbsp;(σ) | **{_sigma_pr:.4f} km** |
+| ½ σ | **{0.5 * _sigma_pr:.4f} km** |
+| **Umbral = μ + ½σ** | **{_tsug_pr:.4f} km** |
+| Umbral actual (slider) | **{thresh_pr:.2f} km** — {_delta_str} |
+
+> El umbral se **recalcula automáticamente** al cambiar los filtros de alcaldía o subsector.
+""")
+        else:
+            st.info("No hay suficientes huecos H₁ para calcular estadísticas (se necesitan ≥ 2).")
+
     _max_pers_pr = float(_h1p_pr.max()) or 1.0
     _h1p_norm    = _h1p_pr / _max_pers_pr
 
