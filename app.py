@@ -1373,7 +1373,7 @@ with tab_persist:
     with pd2:
         eps_p = st.slider("ε de referencia (km)", 0.25, 8.0, 1.5, 0.25, key="eps_persist")
 
-    with st.expander("📐 ¿Cómo se calcula el umbral sugerido?", expanded=False):
+    with st.expander("¿Cómo se calcula el umbral sugerido?", expanded=False):
         if len(h1_pers_fin) >= 2:
             _diff_p = thresh - thresh_sug
             _delta_p = f"Manual: {thresh:.2f} km ({'+' if _diff_p >= 0 else ''}{_diff_p:.2f})" if abs(_diff_p) > 0.01 else "*(= sugerido)*"
@@ -1398,14 +1398,20 @@ La media μ es el promedio de vida de todos los huecos H₁. Sumar ½σ filtra e
     n_sig   = len(h1_sig)
 
     # ── KPIs ──────────────────────────────────────────────────────────────────
-    kp1, kp2, kp3, kp4 = st.columns(4)
+    kp1, kp2, kp3, kp4, kp5 = st.columns(5)
     kp1.metric("Unidades analizadas", f"{len(pts_p):,}")
-    kp2.metric("Features H₁ totales", len(h1_p))
-    kp3.metric(f"Huecos significativos (≥{thresh} km)", n_sig)
+    kp2.metric("Componentes H₀", len(h0_p), help="Total de componentes conexas detectadas en la filtración")
+    kp3.metric("Features H₁ totales", len(h1_p), help="Huecos detectados en toda la filtración")
+    kp4.metric(f"H₁ significativos (≥{thresh} km)", n_sig)
+    kp5.metric("Cavidades H₂", "0", help="Trivialmente vacío para datos geográficos 2D (lat/lon). H₂ requiere al menos una dimensión adicional.")
     if len(h1_pers):
-        kp4.metric("Persistencia H₁ máxima", f"{h1_pers.max():.2f} km")
-    else:
-        kp4.metric("Persistencia H₁ máxima", "—")
+        pass  # se muestra en KPIs estadísticos abajo
+    st.caption(
+        "**H₀** = componentes conexas (clústeres de unidades). "
+        "**H₁** = huecos topológicos (vacíos de cobertura). "
+        "**H₂** = cavidades — siempre cero para nubes de puntos 2D; "
+        "requeriría datos volumétricos 3D para ser no trivial."
+    )
 
     # ── KPIs estadísticos de vida ──────────────────────────────────────────────
     if len(h1_pers_fin) >= 2:
@@ -1471,6 +1477,125 @@ La media μ es el promedio de vida de todos los huecos H₁. Sumar ½σ filtra e
         "**Línea naranja** = umbral de significancia. "
         "Los puntos azules (H₁) alejados de la diagonal son **huecos topológicos reales**."
     )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # B. DISTRIBUCIÓN DE PERSISTENCIA (diagrama de barras)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("B · Distribución de Persistencias — H₀ y H₁")
+    st.caption(
+        "Histograma de los tiempos de vida de cada característica topológica. "
+        "Las barras a la **derecha del umbral** son estructuras persistentes reales."
+    )
+
+    _rows_hist = []
+    for b, d in h0_p:
+        _p = (min(float(d), max_ep) if np.isinf(d) else float(d)) - float(b)
+        _rows_hist.append({"Persistencia (km)": _p, "Dimensión": "H₀ — Componentes conexas"})
+    for b, d in h1_p:
+        _p = (min(float(d), max_ep) if np.isinf(d) else float(d)) - float(b)
+        _rows_hist.append({"Persistencia (km)": _p, "Dimensión": "H₁ — Huecos"})
+    _df_hist = pd.DataFrame(_rows_hist)
+
+    _fig_hist = px.histogram(
+        _df_hist, x="Persistencia (km)", color="Dimensión",
+        color_discrete_map={"H₀ — Componentes conexas": "#e74c3c", "H₁ — Huecos": "#3498db"},
+        barmode="overlay", opacity=0.7, nbins=40,
+        title="Distribución de Persistencia — H₀ y H₁",
+        labels={"Persistencia (km)": "Persistencia (km)", "count": "Cantidad de features"},
+        height=370,
+    )
+    _fig_hist.add_vline(x=thresh, line_dash="dash", line_color="#f39c12",
+                        annotation_text=f"Umbral {thresh} km",
+                        annotation_position="top right")
+    _fig_hist.update_layout(margin=dict(l=0, r=0, t=40, b=0),
+                            legend=dict(orientation="h", y=-0.15))
+    st.plotly_chart(_fig_hist, width="stretch")
+    st.caption(
+        "**Barras rojas (H₀):** cada barra es una componente conexa con esa vida. "
+        "**Barras azules (H₁):** cada barra es un hueco con esa persistencia. "
+        "Las barras a la izquierda del umbral naranja son **ruido topológico**."
+    )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # C. COBERTURA DE AGEBs Y CONECTIVIDAD
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("C · Cobertura de AGEBs y Conectividad")
+    st.caption(
+        f"Proporción de AGEBs con al menos una unidad de salud a ≤ ε = {eps_p} km. "
+        "Vincula las características topológicas (H₀, H₁) con la cobertura territorial real."
+    )
+
+    if mun_p == "CDMX completa":
+        _ageb_cov_p = coneval.dropna(subset=["centroide_lat", "centroide_lon"])
+    else:
+        _cve_mask_p = coneval["cvegeo"].astype(str).str[2:5] == MUN_INV.get(mun_p, "000")
+        _ageb_cov_p = coneval[_cve_mask_p].dropna(subset=["centroide_lat", "centroide_lon"])
+
+    if len(_ageb_cov_p) > 0 and len(pts_p) > 0:
+        _ageb_pts_p   = _ageb_cov_p[["centroide_lat", "centroide_lon"]].values
+        _ageb_key_p   = tuple(map(tuple, _ageb_pts_p))
+        _md_p         = np.array(_compute_coverage(pts_p_key, _ageb_key_p))
+        _pct_cov_p    = float((_md_p <= eps_p).mean() * 100)
+        _n_uncov_p    = int((_md_p > eps_p).sum())
+
+        # H₀ activas al ε de referencia (conectividad)
+        _h0_deaths_p  = np.where(np.isinf(h0_p[:, 1]), max_ep * 2, h0_p[:, 1])
+        _n_comp_eps   = int((_h0_deaths_p > eps_p).sum())
+
+        _cc1, _cc2, _cc3, _cc4 = st.columns(4)
+        _cc1.metric("AGEBs en área", len(_ageb_cov_p))
+        _cc2.metric(f"AGEBs cubiertas (≤{eps_p} km)", f"{_pct_cov_p:.1f}%",
+                    delta=f"{len(_ageb_cov_p) - _n_uncov_p} AGEBs", delta_color="off")
+        _cc3.metric("AGEBs sin cobertura", _n_uncov_p,
+                    delta=f"{100 - _pct_cov_p:.1f}% del total", delta_color="off")
+        _cc4.metric(f"H₀ activas (ε={eps_p} km)", _n_comp_eps,
+                    help="Componentes conexas aún separadas a este radio — indica fragmentación de la red")
+
+        # Diagrama de barras: rezago vs cobertura
+        _ageb_cov_p   = _ageb_cov_p.copy()
+        _ageb_cov_p["dist_min"]  = _md_p
+        _ageb_cov_p["cobertura"] = np.where(_md_p <= eps_p, "Cubierta", "Sin cobertura")
+
+        _rez_order = ["Muy bajo", "Bajo", "Medio", "Alto", "Muy alto"]
+        _df_rcov = (
+            _ageb_cov_p.groupby(["cobertura", "grado_rezago_social"])
+            .size().reset_index(name="n_agebs")
+        )
+        _df_rcov["grado_rezago_social"] = pd.Categorical(
+            _df_rcov["grado_rezago_social"], categories=_rez_order, ordered=True
+        )
+        _fig_rcov = px.bar(
+            _df_rcov.sort_values("grado_rezago_social"),
+            x="grado_rezago_social", y="n_agebs",
+            color="cobertura",
+            color_discrete_map={"Cubierta": "#2ecc71", "Sin cobertura": "#e74c3c"},
+            barmode="group",
+            title=f"AGEBs cubiertas vs sin cobertura por grado de rezago social (ε = {eps_p} km)",
+            labels={"grado_rezago_social": "Grado de rezago social",
+                    "n_agebs": "Número de AGEBs", "cobertura": ""},
+            height=380,
+        )
+        _fig_rcov.update_layout(margin=dict(l=0, r=0, t=40, b=0),
+                                legend=dict(orientation="h", y=-0.2))
+        st.plotly_chart(_fig_rcov, width="stretch")
+
+        _sinc_p = _ageb_cov_p[_ageb_cov_p["cobertura"] == "Sin cobertura"]
+        if len(_sinc_p) > 0:
+            _top_rez_p = _sinc_p["grado_rezago_social"].value_counts().idxmax()
+            st.info(
+                f"A ε = **{eps_p} km**, el **{_pct_cov_p:.1f}%** de las AGEBs tienen cobertura "
+                f"({_n_uncov_p} sin cobertura). "
+                f"El rezago más frecuente en AGEBs sin cobertura es **{_top_rez_p}**. "
+                f"La red presenta **{_n_comp_eps} componentes conexas (H₀)** separadas a este radio, "
+                f"y **{n_sig} huecos H₁ persistentes** (≥ {thresh} km) que corresponden a "
+                f"vacíos estructurales de cobertura."
+            )
+    else:
+        st.info("No hay datos CONEVAL disponibles para calcular cobertura en esta selección.")
 
     st.divider()
 
@@ -1679,7 +1804,7 @@ with tab_prior:
     with _tc2:
         st.metric("Umbral sugerido (μ + ½σ)", f"{_tsug_pr:.3f} km")
 
-    with st.expander("📐 ¿Cómo se calcula el umbral sugerido?", expanded=False):
+    with st.expander("¿Cómo se calcula el umbral sugerido?", expanded=False):
         if len(_h1p_pr_fin) >= 2:
             _diff_pr = thresh_pr - _tsug_pr
             _delta_pr = f"Manual: {thresh_pr:.2f} km ({'+' if _diff_pr >= 0 else ''}{_diff_pr:.2f})" if abs(_diff_pr) > 0.01 else "*(= sugerido)*"
@@ -3080,6 +3205,92 @@ with tab_concl:
     )
 
     # ══════════════════════════════════════════════════════════════════════════
+    # 0. RESUMEN EJECUTIVO (una página)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # Cómputo rápido global (cached — sin costo en recargas)
+    _pub_exec = denue[denue["sector"] == "Público"].dropna(subset=["latitud", "longitud"])
+    _pts_exec = _pub_exec[["latitud", "longitud"]].values
+    if len(_pts_exec) > 1800:
+        _rng_exec = np.random.default_rng(42)
+        _pts_exec = _pts_exec[_rng_exec.choice(len(_pts_exec), 1800, replace=False)]
+    with st.spinner("Calculando métricas globales…"):
+        _dgms_exec, _, _ = _compute_tda_full(tuple(map(tuple, _pts_exec)))
+    _h1_exec  = np.array(_dgms_exec[1]) if len(_dgms_exec[1]) else np.empty((0, 2))
+    _h1p_exec = (_h1_exec[:, 1] - _h1_exec[:, 0]) if len(_h1_exec) else np.array([])
+    _h1p_fin_exec = _h1p_exec[~np.isinf(_h1p_exec)] if len(_h1p_exec) else np.array([])
+    if len(_h1p_fin_exec) >= 2:
+        _mu_exec    = float(_h1p_fin_exec.mean())
+        _sig_exec   = float(_h1p_fin_exec.std())
+        _thr_exec   = _mu_exec + 0.5 * _sig_exec
+        _n_sig_exec = int((_h1p_exec >= _thr_exec).sum())
+        _max_p_exec = float(_h1p_fin_exec.max())
+    else:
+        _thr_exec = 0.5; _n_sig_exec = 0; _max_p_exec = 0.0
+
+    # Alcaldía con menor cobertura — calculada sobre el dataset completo
+    _rez_num_map = {"Muy bajo": 1, "Bajo": 2, "Medio": 3, "Alto": 4, "Muy alto": 5}
+    _pub_by_mun  = _pub_exec.groupby("municipio").size()
+    _ageb_by_mun = coneval.copy()
+    _ageb_by_mun["mun_code"] = _ageb_by_mun["cvegeo"].astype(str).str[2:5]
+    _ageb_by_mun["mun_name"] = _ageb_by_mun["mun_code"].map(MUN_MAP)
+    _rez_score   = (
+        _ageb_by_mun.dropna(subset=["mun_name"])
+        .assign(rez_num=lambda df: df["grado_rezago_social"].map(_rez_num_map).astype(float))
+        .groupby("mun_name")["rez_num"].mean()
+    )
+    _pub_density = _pub_by_mun / (_ageb_by_mun.groupby("mun_name").size().replace(0, np.nan))
+    _vuln_score  = _rez_score / (_pub_density + 1e-9)
+    _worst_mun   = str(_vuln_score.idxmax()) if len(_vuln_score) else "Milpa Alta"
+    _best_mun    = str(_pub_density.idxmax()) if len(_pub_density) else "Cuauhtémoc"
+
+    st.markdown(
+        "<div style='background:linear-gradient(135deg,#2d3436,#0984e3);"
+        "color:#fff;padding:22px 28px;border-radius:10px;margin-bottom:18px'>"
+        "<b style='font-size:1.15em;letter-spacing:.5px'>RESUMEN EJECUTIVO</b>"
+        "<p style='margin:6px 0 0;font-size:0.92em;opacity:.88'>"
+        "El análisis topológico de datos (TDA) sobre la red de salud pública de la CDMX "
+        "revela brechas de cobertura estructurales que los métodos convencionales no detectan. "
+        "Estas son las tres conclusiones que justifican la acción.</p></div>",
+        unsafe_allow_html=True,
+    )
+
+    _ex1, _ex2, _ex3, _ex4 = st.columns(4)
+    _ex1.metric("Unidades públicas analizadas", f"{len(_pub_exec):,}",
+                help="DENUE 2025 — sector salud pública CDMX")
+    _ex2.metric("Huecos estructurales H₁", _n_sig_exec,
+                help=f"Persistencia ≥ {_thr_exec:.2f} km (μ + ½σ). Huecos que sobreviven al cambiar el radio.")
+    _ex3.metric("Persistencia máxima", f"{_max_p_exec:.2f} km",
+                help="El hueco más grave dura este rango de radios sin desaparecer.")
+    _ex4.metric("Alcaldía más vulnerable", _worst_mun,
+                help="Mayor cociente rezago/densidad de oferta pública.")
+
+    _card_data = [
+        ("#d63031", "Brecha geográfica confirmada",
+         f"Los {_n_sig_exec} huecos H₁ persistentes no son artefactos del radio elegido: "
+         f"sobreviven en un rango de hasta {_max_p_exec:.1f} km. Esto confirma que representan "
+         "zonas donde ningún ajuste de parámetros hace desaparecer la ausencia de cobertura."),
+        ("#0984e3", "Concentración y periferia",
+         f"La oferta pública se concentra en alcaldías centrales ({_best_mun} lidera en densidad). "
+         f"La periferia sur-oriente —especialmente {_worst_mun}— combina baja densidad de servicios "
+         "con el mayor rezago social, creando una doble vulnerabilidad que el análisis topológico hace visible."),
+        ("#00b894", "Herramienta accionable para política pública",
+         "El índice I(H) = 0.40·Persistencia + 0.25·IDS + 0.15·Densidad + 0.10·Rezago + 0.10·NBI "
+         "ordena los huecos por urgencia territorial. El tomador de decisiones obtiene un ranking "
+         "reproducible, actualizable y defendible para priorizar inversión en infraestructura sanitaria."),
+    ]
+    for _c_color, _c_title, _c_text in _card_data:
+        st.markdown(
+            f"<div style='border-left:5px solid {_c_color};background:#f8f9fa;"
+            f"padding:14px 18px;border-radius:6px;margin-bottom:10px'>"
+            f"<b style='color:{_c_color}'>{_c_title}</b>"
+            f"<br><span style='color:#444;font-size:0.93em;line-height:1.65'>{_c_text}</span></div>",
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
     # 1. RESUMEN DEL RECORRIDO ANALÍTICO
     # ══════════════════════════════════════════════════════════════════════════
     st.subheader("1 · Resumen del Recorrido Analítico")
@@ -3229,7 +3440,148 @@ siguientes pasos permitirían convertir el diagnóstico en decisiones públicas.
 
     st.divider()
 
-    
+    # ══════════════════════════════════════════════════════════════════════════
+    # A. PATRONES ESPACIALES DETECTADOS
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("A · Patrones en la Distribución Espacial por Alcaldía")
+    st.caption(
+        "Cobertura de AGEBs a ε = 1.5 km vs rezago social promedio por alcaldía. "
+        "Las alcaldías en el cuadrante inferior-derecho (baja cobertura + alto rezago) "
+        "son las zonas de doble vulnerabilidad."
+    )
+
+    _eps_pat    = 1.5
+    _rez_num_map = {"Muy bajo": 1, "Bajo": 2, "Medio": 3, "Alto": 4, "Muy alto": 5}
+    _all_pub_pts_t = tuple(map(tuple, _pub_exec[["latitud", "longitud"]].values))
+    _pat_rows = []
+    for _mn in sorted(_pub_exec["municipio"].dropna().unique()):
+        _code = MUN_INV.get(_mn)
+        if not _code:
+            continue
+        _cve_m   = coneval["cvegeo"].astype(str).str[2:5] == _code
+        _ageb_m  = coneval[_cve_m].dropna(subset=["centroide_lat", "centroide_lon"])
+        _pub_m   = _pub_exec[_pub_exec["municipio"] == _mn]
+        if len(_ageb_m) == 0 or len(_pub_m) == 0:
+            continue
+        _ageb_pts_t = tuple(map(tuple, _ageb_m[["centroide_lat", "centroide_lon"]].values))
+        _md_m   = np.array(_compute_coverage(_all_pub_pts_t, _ageb_pts_t))
+        _pct_m  = float((_md_m <= _eps_pat).mean() * 100)
+        _avg_rez = float(_ageb_m["grado_rezago_social"].map(_rez_num_map).astype(float).fillna(0).mean())
+        _pat_rows.append({
+            "Alcaldía": _mn,
+            "Cobertura (%)": round(_pct_m, 1),
+            "Déficit (%)": round(100 - _pct_m, 1),
+            "Rezago social (1-5)": round(_avg_rez, 2),
+            "Unidades públicas": len(_pub_m),
+            "AGEBs": len(_ageb_m),
+            "Doble vulnerabilidad": round((100 - _pct_m) / 100 * _avg_rez, 3),
+        })
+
+    _df_pat = pd.DataFrame(_pat_rows).sort_values("Déficit (%)", ascending=False)
+
+    _pc1, _pc2 = st.columns(2)
+    with _pc1:
+        _fig_bar_pat = px.bar(
+            _df_pat, x="Déficit (%)", y="Alcaldía", orientation="h",
+            color="Rezago social (1-5)", color_continuous_scale="RdYlGn_r",
+            title=f"Déficit de cobertura por alcaldía (ε = {_eps_pat} km)",
+            labels={"Déficit (%)": "% AGEBs sin cobertura", "Alcaldía": ""},
+            height=520, text="Déficit (%)",
+        )
+        _fig_bar_pat.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+        _fig_bar_pat.update_layout(
+            margin=dict(l=0, r=20, t=40, b=0),
+            coloraxis_colorbar=dict(title="Rezago<br>(1=bajo, 5=alto)", thickness=12),
+            yaxis=dict(autorange="reversed"),
+        )
+        st.plotly_chart(_fig_bar_pat, width="stretch")
+
+    with _pc2:
+        _fig_scatter_pat = px.scatter(
+            _df_pat, x="Cobertura (%)", y="Rezago social (1-5)",
+            size="Unidades públicas", color="Doble vulnerabilidad",
+            color_continuous_scale="RdYlGn_r", text="Alcaldía",
+            title="Cobertura vs Rezago (burbuja = oferta pública)",
+            labels={"Cobertura (%)": "% AGEBs cubiertas",
+                    "Rezago social (1-5)": "Rezago promedio (1-5)"},
+            height=520,
+        )
+        _fig_scatter_pat.update_traces(
+            textposition="top center", textfont=dict(size=9),
+            marker=dict(opacity=0.8),
+        )
+        _fig_scatter_pat.add_hline(y=2.5, line_dash="dot", line_color="gray", opacity=0.5)
+        _fig_scatter_pat.add_vline(x=80, line_dash="dot", line_color="gray", opacity=0.5)
+        _fig_scatter_pat.add_annotation(x=35, y=4.8, text="Doble vulnerabilidad",
+            showarrow=False, font=dict(color="#d63031", size=10))
+        _fig_scatter_pat.add_annotation(x=95, y=1.3, text="Mejor posicion",
+            showarrow=False, font=dict(color="#00b894", size=10))
+        _fig_scatter_pat.update_layout(
+            margin=dict(l=0, r=20, t=40, b=0),
+            coloraxis_colorbar=dict(title="Doble<br>vuln.", thickness=12),
+        )
+        st.plotly_chart(_fig_scatter_pat, width="stretch")
+
+    _top3 = _df_pat.nlargest(3, "Doble vulnerabilidad")
+    st.info(
+        "**Zonas de doble vulnerabilidad** (alto deficit + alto rezago): "
+        + " · ".join(
+            f"**{r['Alcaldia']}** ({r['Deficit (%)']:.0f}% sin cobertura, rezago {r['Rezago social (1-5)']:.1f}/5)"
+            for _, r in _top3.rename(columns={"Alcaldía": "Alcaldia", "Déficit (%)": "Deficit (%)"}).iterrows()
+        )
+    )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # B. ¿POR QUÉ TDA Y NO BUFFER / K-MEANS?
+    # ══════════════════════════════════════════════════════════════════════════
+    st.subheader("B · ¿Por qué TDA y no buffer, K-Means o regresion?")
+    st.caption("La topologia algebraica detecta patrones estructurales que los metodos convencionales no pueden capturar.")
+
+    _comp_headers = ["Capacidad", "Buffer / isocrona", "K-Means", "Regresion espacial", "TDA (este analisis)"]
+    _comp_rows = [
+        ("Detecta huecos en la red de servicios",         "No",      "No",     "Parcial",  "Si"),
+        ("Resultado estable al cambiar el radio",         "No",      "No",     "Varia",    "Si (persistencia)"),
+        ("No requiere supuestos de forma del espacio",    "No",      "No",     "No",       "Si"),
+        ("Cuantifica la gravedad del hueco",              "No",      "No",     "Si",       "Si (vida del feature)"),
+        ("Detecta huecos que cruzan multiples clusters",  "No",      "No",     "No",       "Si"),
+        ("Integra variables sociales",                    "No",      "Si",     "Si",       "Si (indice I(H))"),
+        ("Reproducible y actualizable",                   "Si",      "Si",     "Si",       "Si"),
+    ]
+    _s_yes  = "background:#d4edda;color:#155724;font-weight:600;border-radius:4px;padding:2px 7px"
+    _s_no   = "background:#f8d7da;color:#721c24;border-radius:4px;padding:2px 7px"
+    _s_part = "background:#fff3cd;color:#856404;border-radius:4px;padding:2px 7px"
+    def _b(v):
+        return (f"<span style='{_s_yes}'>{v}</span>" if "Si" in v
+                else f"<span style='{_s_no}'>{v}</span>" if v == "No"
+                else f"<span style='{_s_part}'>{v}</span>")
+    _th = "".join(f"<th style='background:#2d3436;color:#fff;padding:8px 10px;text-align:left'>{h}</th>" for h in _comp_headers)
+    _tb = ""
+    for _ri, (_cap, *_vals) in enumerate(_comp_rows):
+        _bg2 = "#f8f9fa" if _ri % 2 == 0 else "#fff"
+        _tb += f"<tr style='background:{_bg2}'><td style='padding:7px 10px'>{_cap}</td>"
+        _tb += "".join(f"<td style='padding:7px 10px;text-align:center'>{_b(v)}</td>" for v in _vals)
+        _tb += "</tr>"
+    st.markdown(
+        f"<table style='width:100%;border-collapse:collapse;font-size:0.88em'>"
+        f"<thead><tr>{_th}</tr></thead><tbody>{_tb}</tbody></table>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("")
+    st.markdown(
+        "<div style='background:#0984e3;color:#fff;padding:14px 18px;border-radius:8px;margin-top:10px'>"
+        "<b>El argumento central:</b> un buffer de 1.5 km puede reportar que el 85% de las AGEBs "
+        "estan cubiertas. TDA revela que dentro de ese porcentaje existen <i>huecos estructurales</i> "
+        "que el buffer no puede ver porque no mide la <i>forma topologica</i> de la red, solo la "
+        "distancia punto a punto. La persistencia homologica confirma que esos huecos no son ruido: "
+        "sobreviven al variar el radio, convirtiendolos en candidatos verificables para intervencion."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.divider()
+
     # ══════════════════════════════════════════════════════════════════════════
     # 3. MODELO DE NEGOCIO / PROPUESTA DE VALOR
     # ══════════════════════════════════════════════════════════════════════════
