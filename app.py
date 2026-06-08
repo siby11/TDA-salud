@@ -1850,7 +1850,7 @@ with tab_prior:
     )
 
     # ── Controles ─────────────────────────────────────────────────────────────
-    pr1, pr2, pr3, pr4 = st.columns([2, 2, 1, 1])
+    pr1, pr2, pr3, pr4, pr5 = st.columns([2, 2, 1, 1, 1])
     with pr1:
         mun_pr = st.selectbox(
             "Alcaldía",
@@ -1866,6 +1866,8 @@ with tab_prior:
         eps_pr    = st.slider("Radio ε (km)", 0.25, 8.0, 1.5, 0.01, key="eps_pr")
     with pr4:
         thresh_pr = st.slider("Umbral persist. (km)", 0.1, 3.0, 0.5, 0.1, key="thresh_pr")
+    with pr5:
+        max_pts_pr = st.slider("Máx. puntos", 50, 2500, 2100, 50, key="maxpts_prior")
 
     # ── Preparar datos ─────────────────────────────────────────────────────────
     # 1. Unidades públicas
@@ -1892,9 +1894,14 @@ with tab_prior:
     ageb_pr = ageb_pr.dropna(subset=["centroide_lat", "centroide_lon"]).reset_index(drop=True)
 
     # 3. TDA
-    _pts_pr = pub_pr[["latitud", "longitud"]].values
-    if len(_pts_pr) > 2500:
-        _pts_pr = pub_pr.sample(2500, random_state=42)[["latitud", "longitud"]].values
+    n_univ_pr = len(pub_pr)
+    if n_univ_pr > max_pts_pr:
+        pub_pr_tda = pub_pr.sample(max_pts_pr, random_state=42)
+        st.caption(f"Muestra de {max_pts_pr} de {n_univ_pr} unidades públicas.")
+    else:
+        pub_pr_tda = pub_pr
+        st.caption(f"Se usan {n_univ_pr} unidades públicas para el cálculo TDA.")
+    _pts_pr = pub_pr_tda[["latitud", "longitud"]].values
 
     if len(_pts_pr) < 5:
         st.warning("No hay suficientes unidades públicas con este filtro (mínimo 5).")
