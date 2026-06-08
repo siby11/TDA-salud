@@ -2001,6 +2001,7 @@ $$I(H_i) = 0.40 \\cdot P_i + 0.25 \\cdot B_i + 0.15 \\cdot D_i + 0.10 \\cdot R_i
     # ══════════════════════════════════════════════════════════════════════════
     # B. DESCOMPOSICIÓN DEL ÍNDICE
     # ══════════════════════════════════════════════════════════════════════════
+    _comentado_prior_b = """
     st.subheader("B · Descomposición del Índice de Importancia")
     st.caption(
         "Cada barra muestra la contribución ponderada de cada componente al índice total. "
@@ -2035,6 +2036,7 @@ $$I(H_i) = 0.40 \\cdot P_i + 0.25 \\cdot B_i + 0.15 \\cdot D_i + 0.10 \\cdot R_i
     st.plotly_chart(_fig_decomp, width="stretch")
 
     st.divider()
+    """
 
     # ══════════════════════════════════════════════════════════════════════════
     # C. TABLA DE PRIORIZACIÓN
@@ -3211,9 +3213,9 @@ with tab_concl:
     # Cómputo rápido global (cached — sin costo en recargas)
     _pub_exec = denue[denue["sector"] == "Público"].dropna(subset=["latitud", "longitud"])
     _pts_exec = _pub_exec[["latitud", "longitud"]].values
-    if len(_pts_exec) > 1800:
+    if len(_pts_exec) > 2100:
         _rng_exec = np.random.default_rng(42)
-        _pts_exec = _pts_exec[_rng_exec.choice(len(_pts_exec), 1800, replace=False)]
+        _pts_exec = _pts_exec[_rng_exec.choice(len(_pts_exec), 2100, replace=False)]
     with st.spinner("Calculando métricas globales…"):
         _dgms_exec, _, _ = _compute_tda_full(tuple(map(tuple, _pts_exec)))
     _h1_exec  = np.array(_dgms_exec[1]) if len(_dgms_exec[1]) else np.empty((0, 2))
@@ -3254,7 +3256,7 @@ with tab_concl:
     )
 
     _ex1, _ex2, _ex3, _ex4 = st.columns(4)
-    _ex1.metric("Unidades públicas analizadas", f"{len(_pub_exec):,}",
+    _ex1.metric("Unidades públicas analizadas", f"{len(_pts_exec):,}",
                 help="DENUE 2025 — sector salud pública CDMX")
     _ex2.metric("Huecos estructurales H₁", _n_sig_exec,
                 help=f"Persistencia ≥ {_thr_exec:.2f} km (μ + ½σ). Huecos que sobreviven al cambiar el radio.")
