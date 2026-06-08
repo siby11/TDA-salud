@@ -1297,346 +1297,161 @@ with tab_complejos:
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB PERSISTENCIA HOMOLÓGICA
 # ═══════════════════════════════════════════════════════════════════════════════
-with tab_persist:
+    with tab_persist:
 
-    st.header("Persistencia Homológica")
-    st.caption(
-        "Análisis detallado de las características topológicas persistentes de la red de salud pública. "
-        "Se identifican componentes conexas (H₀), huecos (H₁) y su relación con la cobertura y el rezago social."
-    )
-
-    # ── Controles ─────────────────────────────────────────────────────────────
-    pa, pb, pc, pd0 = st.columns([2, 2, 2, 2])
-    with pa:
-        mun_list_p = ["CDMX completa"] + sorted(denue["municipio"].unique().tolist())
-        mun_p = st.selectbox("Alcaldía", mun_list_p, key="mun_persist")
-    with pb:
-        sector_opts_p = sorted(denue["sector"].dropna().unique().tolist())
-        sector_p = st.selectbox("Sector", sector_opts_p, index=sector_opts_p.index("Público") if "Público" in sector_opts_p else 0, key="sector_persist")
-    with pc:
-        subsec_opts_p = ["Todos los subsectores"] + sorted(
-            denue[denue["sector"] == sector_p]["subsector"].dropna().unique().tolist()
-        )
-        subsec_p = st.selectbox("Subsector", subsec_opts_p, key="subsec_persist")
-    with pd0:
-        max_pts_p = st.slider("Máx. puntos", 50, 2500, 2100, 50, key="maxpts_persist")
-
-    # ── Filtrado ──────────────────────────────────────────────────────────────
-    pub_p = denue[denue["sector"] == sector_p].dropna(subset=["latitud", "longitud"])
-    if mun_p != "CDMX completa":
-        pub_p = pub_p[pub_p["municipio"] == mun_p]
-    if subsec_p != "Todos los subsectores":
-        pub_p = pub_p[pub_p["subsector"] == subsec_p]
-    n_univ_p = len(pub_p)
-    if n_univ_p > max_pts_p:
-        pub_p = pub_p.sample(max_pts_p, random_state=42)
-        st.caption(f" Muestra de {max_pts_p} de {n_univ_p} unidades.")
-
-    pts_p  = pub_p[["latitud", "longitud"]].values
-    if len(pts_p) < 5:
-        st.warning("Muy pocas unidades para el análisis. Amplía el filtro.")
-        st.stop()
-
-    # ── Cómputo TDA completo (antes del slider para calcular μ) ──────────────
-    with st.spinner("Calculando persistencia…"):
-        pts_p_key = tuple(map(tuple, pts_p))
-        dgms_raw, D_p_list, h1_centers = _compute_tda_full(pts_p_key)
-        D_p = np.array(D_p_list)
-
-    h0_p = np.array(dgms_raw[0])
-    h1_p = np.array(dgms_raw[1]) if len(dgms_raw[1]) else np.empty((0, 2))
-    max_ep = min(float(D_p.max()) if D_p.size else 15.0, 15.0)
-
-    h1_pers = (h1_p[:, 1] - h1_p[:, 0]) if len(h1_p) else np.array([])
-
-    # ── Estadísticas de vida de los huecos ────────────────────────────────────
-    h1_pers_fin = h1_pers[~np.isinf(h1_pers)] if len(h1_pers) else np.array([])
-    if len(h1_pers_fin) >= 2:
-        mu_pers    = float(h1_pers_fin.mean())
-        sigma_pers = float(h1_pers_fin.std())
-        thresh_sug = mu_pers + 0.5 * sigma_pers   # μ + ½σ como umbral estadístico
-        # Hueco representativo: el más cercano a la media
-        idx_repr   = int(np.argmin(np.abs(h1_pers_fin - mu_pers)))
-    else:
-        mu_pers = sigma_pers = thresh_sug = 0.0
-        idx_repr = 0
-
-    # ── Controles fila 2 — umbral default = μ vida H₁ ────────────────────────
-    _thresh_default = float(np.round(np.clip(mu_pers, 0.1, 3.0), 1)) if mu_pers > 0 else 0.5
-    pd1, pd2 = st.columns([3, 2])
-    with pd1:
-        thresh = st.slider(
-            "Umbral de persistencia significativa (km)",
-            min_value=0.1, max_value=3.0, value=_thresh_default, step=0.1,
-            help=f"Huecos con persistencia ≥ umbral se consideran reales. Default = μ vida H₁ ({mu_pers:.2f} km).",
-        )
-    with pd2:
-        eps_p = st.slider("ε de referencia (km)", 0.25, 8.0, 1.5, 0.25, key="eps_persist")
-
-    h1_sig  = h1_p[h1_pers >= thresh] if len(h1_p) else np.empty((0, 2))
-    n_sig   = len(h1_sig)
-
-    # ── KPIs ──────────────────────────────────────────────────────────────────
-    kp1, kp2, kp3, kp4 = st.columns(4)
-    kp1.metric("Unidades analizadas", f"{len(pts_p):,}")
-    kp2.metric("Features H₁ totales", len(h1_p))
-    kp3.metric(f"Huecos significativos (≥{thresh} km)", n_sig)
-    if len(h1_pers):
-        kp4.metric("Persistencia H₁ máxima", f"{h1_pers.max():.2f} km")
-    else:
-        kp4.metric("Persistencia H₁ máxima", "—")
-
-    # ── KPIs estadísticos de vida ──────────────────────────────────────────────
-    if len(h1_pers_fin) >= 2:
-        sk1, sk2, sk3, sk4 = st.columns(4)
-        sk1.metric("Vida media H₁ (μ)", f"{mu_pers:.3f} km")
-        sk2.metric("Desv. estándar (σ)", f"{sigma_pers:.3f} km")
-        sk3.metric("Umbral sugerido (μ + ½σ)", f"{thresh_sug:.3f} km",
-                   delta=f"{'↑' if thresh_sug > thresh else '↓'} vs manual {thresh:.2f} km",
-                   delta_color="off")
-        sk4.metric("Hueco representativo", f"H₁ #{idx_repr + 1}",
-                   delta=f"persist. {h1_pers_fin[idx_repr]:.3f} km", delta_color="off")
-
-    st.divider()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # A. DIAGRAMA DE PERSISTENCIA (avanzado)
-    # ══════════════════════════════════════════════════════════════════════════
-    st.subheader("A · Diagrama de Persistencia")
-
-    rows_pers = []
-    for b, d in h0_p:
-        d_p = min(float(d), max_ep * 1.05) if np.isinf(d) else float(d)
-        rows_pers.append({"Dim": "H₀ Componentes", "Nacimiento": float(b),
-                          "Muerte": d_p, "Persistencia": d_p - float(b)})
-    for b, d in h1_p:
-        d_p = min(float(d), max_ep * 1.05) if np.isinf(d) else float(d)
-        pers = d_p - float(b)
-        rows_pers.append({"Dim": "H₁ Huecos", "Nacimiento": float(b),
-                          "Muerte": d_p, "Persistencia": pers,
-                          "Significativo": "Sí" if pers >= thresh else "No"})
-
-    df_pers = pd.DataFrame(rows_pers)
-    fig_pd = px.scatter(
-        df_pers, x="Nacimiento", y="Muerte", color="Dim",
-        color_discrete_map={"H₀ Componentes": "#e74c3c", "H₁ Huecos": "#3498db"},
-        size="Persistencia", size_max=18, opacity=0.75,
-        hover_data={"Persistencia": ":.3f"},
-        title="Diagrama de Persistencia — H₀ y H₁",
-        labels={"Nacimiento": "Nacimiento ε (km)", "Muerte": "Muerte ε (km)"},
-        height=450,
-    )
-    lim = max_ep * 1.05
-    # Diagonal (persistencia = 0, ruido)
-    fig_pd.add_shape(type="line", x0=0, y0=0, x1=lim, y1=lim,
-                     line=dict(color="gray", dash="dot", width=1))
-    # Umbral de significancia manual (persistencia = thresh)
-    fig_pd.add_shape(type="line", x0=0, y0=thresh, x1=lim - thresh, y1=lim,
-                     line=dict(color="#f39c12", dash="dash", width=1.5))
-    # Línea ε referencia
-    fig_pd.add_vline(x=eps_p, line_dash="dash", line_color="green", opacity=0.6,
-                     annotation_text=f"ε={eps_p}km", annotation_position="top right")
-
-    if len(h1_pers_fin) >= 2:
-        # Línea de vida media μ (paralela a la diagonal, distancia = μ)
-        fig_pd.add_shape(type="line",
-                         x0=0, y0=mu_pers, x1=max(0, lim - mu_pers), y1=lim,
-                         line=dict(color="#9b59b6", dash="solid", width=1.5))
-        fig_pd.add_annotation(
-            x=lim * 0.55, y=lim * 0.55 + mu_pers,
-            text=f"μ = {mu_pers:.2f} km", showarrow=False,
-            font=dict(color="#9b59b6", size=11),
-            bgcolor="rgba(255,255,255,0.8)",
-        )
-        # Banda ±σ alrededor de μ (μ−σ a μ+σ)
-        lo = max(0, mu_pers - sigma_pers)
-        hi = mu_pers + sigma_pers
-        fig_pd.add_shape(type="rect",
-                         x0=0, y0=lo, x1=lim, y1=hi,
-                         fillcolor="rgba(155,89,182,0.08)",
-                         line=dict(width=0),
-                         layer="below")
-        # Línea umbral sugerido μ+½σ
-        fig_pd.add_shape(type="line",
-                         x0=0, y0=thresh_sug, x1=max(0, lim - thresh_sug), y1=lim,
-                         line=dict(color="#8e44ad", dash="dot", width=1.5))
-        fig_pd.add_annotation(
-            x=lim * 0.3, y=lim * 0.3 + thresh_sug,
-            text=f"Umbral sugerido μ+½σ = {thresh_sug:.2f} km",
-            showarrow=False, font=dict(color="#8e44ad", size=10),
-            bgcolor="rgba(255,255,255,0.8)",
-        )
-        # Punto representativo (hueco más cercano a μ)
-        if idx_repr < len(h1_p):
-            repr_b = float(h1_p[idx_repr, 0])
-            repr_d = float(h1_p[idx_repr, 1]) if not np.isinf(h1_p[idx_repr, 1]) else max_ep * 1.05
-            fig_pd.add_trace(go.Scatter(
-                x=[repr_b], y=[repr_d],
-                mode="markers",
-                marker=dict(size=18, color="#9b59b6", symbol="star",
-                            line=dict(color="white", width=1.5)),
-                name=f"Hueco representativo H₁ #{idx_repr + 1}",
-                hovertemplate=(
-                    f"<b>Hueco representativo</b><br>"
-                    f"Nacimiento: {repr_b:.3f} km<br>"
-                    f"Muerte: {repr_d:.3f} km<br>"
-                    f"Persistencia: {h1_pers_fin[idx_repr]:.3f} km (≈ μ)<extra></extra>"
-                ),
-            ))
-
-    # Anotaciones de zonas
-    fig_pd.add_annotation(x=lim * 0.08, y=lim * 0.97,
-                          text="◀ Ruido (baja persistencia)", showarrow=False,
-                          font=dict(color="gray", size=11))
-    fig_pd.add_annotation(x=lim * 0.15, y=lim * 0.6,
-                          text="Huecos<br>significativos ▶", showarrow=False,
-                          font=dict(color="#f39c12", size=11))
-    fig_pd.update_layout(margin=dict(l=0, r=0, t=40, b=0))
-    st.plotly_chart(fig_pd, width="stretch")
-    st.caption(
-        "**Diagonal punteada gris** = persistencia cero (ruido). "
-        "**Línea naranja** = umbral manual. "
-        "**Línea morada sólida** = vida media μ. "
-        "**Línea morada punteada** = umbral sugerido μ+½σ. "
-        "**Banda morada** = rango μ±σ. "
-        "**Estrella morada** = hueco representativo (persistencia más cercana a μ)."
-    )
-
-    # ── Vista combinada: diagrama H₁ etiquetado + mapa espacial ──────────────
-    n_c = min(len(h1_centers), len(h1_p))
-    if n_c > 0:
-        st.subheader("A.2 · Persistencia ↔ Localización Espacial de Huecos H₁")
+        st.header("Persistencia Homológica")
         st.caption(
-            "Izquierda: cada hueco H₁ etiquetado por número, tamaño y color según persistencia. "
-            "Derecha: localización aproximada en el mapa (centroide del cociclo). "
-            "Mismo número = mismo hueco en ambas vistas. ★ = hueco representativo (≈ μ)."
+            "Análisis detallado de las características topológicas persistentes de la red de salud pública. "
+            "Se identifican componentes conexas (H₀), huecos (H₁) y su relación con la cobertura y el rezago social."
         )
 
-        hole_lats_v = [h1_centers[i][0] for i in range(n_c)]
-        hole_lons_v = [h1_centers[i][1] for i in range(n_c)]
-        hole_pers_v = [
-            float(h1_pers[i]) if i < len(h1_pers) and not np.isinf(h1_pers[i]) else max_ep
-            for i in range(n_c)
-        ]
-        hole_labels_v = [f"H{i+1}" for i in range(n_c)]
-        births_v = [float(h1_p[i, 0]) for i in range(n_c)]
-        deaths_v = [
-            float(h1_p[i, 1]) if not np.isinf(h1_p[i, 1]) else max_ep * 1.05
-            for i in range(n_c)
-        ]
-        max_pv = max(hole_pers_v) if hole_pers_v else 1.0
-
-        col_diag, col_mapa = st.columns(2)
-
-        with col_diag:
-            fig_h1_lab = go.Figure()
-            # Diagonal
-            lim_v = max_ep * 1.05
-            fig_h1_lab.add_shape(type="line", x0=0, y0=0, x1=lim_v, y1=lim_v,
-                                 line=dict(color="gray", dash="dot", width=1))
-            # Umbral manual
-            fig_h1_lab.add_shape(type="line", x0=0, y0=thresh,
-                                 x1=max(0, lim_v - thresh), y1=lim_v,
-                                 line=dict(color="#f39c12", dash="dash", width=1))
-            # Todos los huecos H₁, coloreados por persistencia
-            fig_h1_lab.add_trace(go.Scatter(
-                x=births_v, y=deaths_v,
-                mode="markers+text",
-                text=hole_labels_v,
-                textposition="top right",
-                textfont=dict(size=8, color="#2d3436"),
-                marker=dict(
-                    size=[9 + 16 * (p / (max_pv + 1e-9)) for p in hole_pers_v],
-                    color=hole_pers_v,
-                    colorscale="RdYlGn_r",
-                    cmin=0, cmax=max_pv,
-                    colorbar=dict(title="Persist.<br>(km)", thickness=12, len=0.7,
-                                  x=1.01),
-                    showscale=True,
-                    line=dict(color="white", width=1),
-                    opacity=0.85,
-                ),
-                hovertemplate=(
-                    "<b>%{text}</b><br>"
-                    "Nac.: %{x:.3f} km · Muerte: %{y:.3f} km<br>"
-                    "Persist.: %{marker.color:.3f} km<extra></extra>"
-                ),
-                name="Huecos H₁",
-            ))
-            # Estrella representativo
-            if idx_repr < n_c:
-                fig_h1_lab.add_trace(go.Scatter(
-                    x=[births_v[idx_repr]], y=[deaths_v[idx_repr]],
-                    mode="markers",
-                    marker=dict(size=20, color="gold", symbol="star",
-                                line=dict(color="#8e44ad", width=2)),
-                    name=f"Repr. H{idx_repr+1}",
-                    hovertemplate=f"<b>Hueco representativo H{idx_repr+1}</b><br>"
-                                  f"Persist. ≈ μ = {mu_pers:.3f} km<extra></extra>",
-                ))
-            fig_h1_lab.update_layout(
-                xaxis_title="Nacimiento ε (km)", yaxis_title="Muerte ε (km)",
-                height=400, margin=dict(l=0, r=60, t=20, b=40),
-                legend=dict(font=dict(size=10), x=0, y=1),
-                showlegend=True,
+        # ── Controles ─────────────────────────────────────────────────────────────
+        pa, pb, pc, pd0 = st.columns([2, 2, 2, 2])
+        with pa:
+            mun_list_p = ["CDMX completa"] + sorted(denue["municipio"].unique().tolist())
+            mun_p = st.selectbox("Alcaldía", mun_list_p, key="mun_persist")
+        with pb:
+            sector_opts_p = sorted(denue["sector"].dropna().unique().tolist())
+            sector_p = st.selectbox("Sector", sector_opts_p, index=sector_opts_p.index("Público") if "Público" in sector_opts_p else 0, key="sector_persist")
+        with pc:
+            subsec_opts_p = ["Todos los subsectores"] + sorted(
+                denue[denue["sector"] == sector_p]["subsector"].dropna().unique().tolist()
             )
-            st.plotly_chart(fig_h1_lab, width="stretch")
+            subsec_p = st.selectbox("Subsector", subsec_opts_p, key="subsec_persist")
+        with pd0:
+            max_pts_p = st.slider("Máx. puntos", 50, 2500, 2100, 50, key="maxpts_persist")
 
-        with col_mapa:
-            fig_hmap = go.Figure()
-            # Unidades de salud de fondo
-            fig_hmap.add_trace(go.Scattermapbox(
-                lat=pts_p[:, 0].tolist(), lon=pts_p[:, 1].tolist(),
-                mode="markers",
-                marker=dict(size=4, color="rgba(120,120,120,0.35)"),
-                name="Unidades salud",
-                hoverinfo="skip",
-            ))
-            # Huecos H₁ coloreados por persistencia
-            fig_hmap.add_trace(go.Scattermapbox(
-                lat=hole_lats_v, lon=hole_lons_v,
-                mode="markers+text",
-                text=hole_labels_v,
-                textfont=dict(size=8, color="black"),
-                marker=dict(
-                    size=[11 + 20 * (p / (max_pv + 1e-9)) for p in hole_pers_v],
-                    color=hole_pers_v,
-                    colorscale="RdYlGn_r",
-                    cmin=0, cmax=max_pv,
-                    colorbar=dict(title="Persist.<br>(km)", thickness=12, x=1.0),
-                    showscale=True,
-                    opacity=0.85,
-                ),
-                hovertemplate=(
-                    "<b>%{text}</b><br>Persist.: %{marker.color:.3f} km<extra></extra>"
-                ),
-                name="Huecos H₁",
-            ))
-            # Estrella representativo en mapa
-            if idx_repr < n_c:
-                fig_hmap.add_trace(go.Scattermapbox(
-                    lat=[hole_lats_v[idx_repr]], lon=[hole_lons_v[idx_repr]],
-                    mode="markers",
-                    marker=dict(size=22, color="gold"),
-                    name=f"Repr. H{idx_repr+1}",
-                    hovertemplate=f"<b>Hueco representativo H{idx_repr+1}</b><br>"
-                                  f"Persist. ≈ μ = {mu_pers:.3f} km<extra></extra>",
-                ))
-            ctr_lat = float(np.mean(hole_lats_v)) if hole_lats_v else 19.43
-            ctr_lon = float(np.mean(hole_lons_v)) if hole_lons_v else -99.13
-            fig_hmap.update_layout(
-                mapbox=dict(
-                    style="carto-positron",
-                    center=dict(lat=ctr_lat, lon=ctr_lon),
-                    zoom=10 if mun_p == "CDMX completa" else 11,
-                ),
-                height=400,
-                margin=dict(l=0, r=0, t=0, b=0),
-                legend=dict(bgcolor="rgba(255,255,255,0.85)", font=dict(size=10)),
+        # ── Filtrado ──────────────────────────────────────────────────────────────
+        pub_p = denue[denue["sector"] == sector_p].dropna(subset=["latitud", "longitud"])
+        if mun_p != "CDMX completa":
+            pub_p = pub_p[pub_p["municipio"] == mun_p]
+        if subsec_p != "Todos los subsectores":
+            pub_p = pub_p[pub_p["subsector"] == subsec_p]
+        n_univ_p = len(pub_p)
+        if n_univ_p > max_pts_p:
+            pub_p = pub_p.sample(max_pts_p, random_state=42)
+            st.caption(f" Muestra de {max_pts_p} de {n_univ_p} unidades.")
+
+        pts_p  = pub_p[["latitud", "longitud"]].values
+        if len(pts_p) < 5:
+            st.warning("Muy pocas unidades para el análisis. Amplía el filtro.")
+            st.stop()
+
+        # ── Cómputo TDA completo (antes del slider para calcular μ) ──────────────
+        with st.spinner("Calculando persistencia…"):
+            pts_p_key = tuple(map(tuple, pts_p))
+            dgms_raw, D_p_list, h1_centers = _compute_tda_full(pts_p_key)
+            D_p = np.array(D_p_list)
+
+        h0_p = np.array(dgms_raw[0])
+        h1_p = np.array(dgms_raw[1]) if len(dgms_raw[1]) else np.empty((0, 2))
+        max_ep = min(float(D_p.max()) if D_p.size else 15.0, 15.0)
+
+        h1_pers = (h1_p[:, 1] - h1_p[:, 0]) if len(h1_p) else np.array([])
+
+        # ── Estadísticas de vida de los huecos ────────────────────────────────────
+        h1_pers_fin = h1_pers[~np.isinf(h1_pers)] if len(h1_pers) else np.array([])
+        if len(h1_pers_fin) >= 2:
+            mu_pers    = float(h1_pers_fin.mean())
+            sigma_pers = float(h1_pers_fin.std())
+            thresh_sug = mu_pers + 0.5 * sigma_pers   # μ + ½σ como umbral estadístico
+            # Hueco representativo: el más cercano a la media
+            idx_repr   = int(np.argmin(np.abs(h1_pers_fin - mu_pers)))
+        else:
+            mu_pers = sigma_pers = thresh_sug = 0.0
+            idx_repr = 0
+
+        # ── Controles fila 2 — umbral default = μ vida H₁ ────────────────────────
+        _thresh_default = float(np.round(np.clip(mu_pers, 0.1, 3.0), 1)) if mu_pers > 0 else 0.5
+        pd1, pd2 = st.columns([3, 2])
+        with pd1:
+            thresh = st.slider(
+                "Umbral de persistencia significativa (km)",
+                min_value=0.1, max_value=3.0, value=_thresh_default, step=0.1,
+                help=f"Huecos con persistencia ≥ umbral se consideran reales. Default = μ vida H₁ ({mu_pers:.2f} km).",
             )
-            st.plotly_chart(fig_hmap, width="stretch")
+        with pd2:
+            eps_p = st.slider("ε de referencia (km)", 0.25, 8.0, 1.5, 0.25, key="eps_persist")
 
-    st.divider()
+        h1_sig  = h1_p[h1_pers >= thresh] if len(h1_p) else np.empty((0, 2))
+        n_sig   = len(h1_sig)
+
+        # ── KPIs ──────────────────────────────────────────────────────────────────
+        kp1, kp2, kp3, kp4 = st.columns(4)
+        kp1.metric("Unidades analizadas", f"{len(pts_p):,}")
+        kp2.metric("Features H₁ totales", len(h1_p))
+        kp3.metric(f"Huecos significativos (≥{thresh} km)", n_sig)
+        if len(h1_pers):
+            kp4.metric("Persistencia H₁ máxima", f"{h1_pers.max():.2f} km")
+        else:
+            kp4.metric("Persistencia H₁ máxima", "—")
+
+        # ── KPIs estadísticos de vida ──────────────────────────────────────────────
+        if len(h1_pers_fin) >= 2:
+            sk1, sk2, sk3, sk4 = st.columns(4)
+            sk1.metric("Vida media H₁ (μ)", f"{mu_pers:.3f} km")
+            sk2.metric("Desv. estándar (σ)", f"{sigma_pers:.3f} km")
+            sk3.metric("Umbral sugerido (μ + ½σ)", f"{thresh_sug:.3f} km",
+                    delta=f"{'↑' if thresh_sug > thresh else '↓'} vs manual {thresh:.2f} km",
+                    delta_color="off")
+            sk4.metric("Hueco representativo", f"H₁ #{idx_repr + 1}",
+                    delta=f"persist. {h1_pers_fin[idx_repr]:.3f} km", delta_color="off")
+
+        st.divider()
+
+        # ══════════════════════════════════════════════════════════════════════════
+        # A. DIAGRAMA DE PERSISTENCIA (avanzado)
+        # ══════════════════════════════════════════════════════════════════════════
+        st.subheader("A · Diagrama de Persistencia")
+
+        rows_pers = []
+        for b, d in h0_p:
+            d_p = min(float(d), max_ep * 1.05) if np.isinf(d) else float(d)
+            rows_pers.append({"Dim": "H₀ Componentes", "Nacimiento": float(b),
+                            "Muerte": d_p, "Persistencia": d_p - float(b)})
+        for b, d in h1_p:
+            d_p = min(float(d), max_ep * 1.05) if np.isinf(d) else float(d)
+            pers = d_p - float(b)
+            rows_pers.append({"Dim": "H₁ Huecos", "Nacimiento": float(b),
+                            "Muerte": d_p, "Persistencia": pers,
+                            "Significativo": "Sí" if pers >= thresh else "No"})
+
+        df_pers = pd.DataFrame(rows_pers)
+        fig_pd = px.scatter(
+            df_pers, x="Nacimiento", y="Muerte", color="Dim",
+            color_discrete_map={"H₀ Componentes": "#e74c3c", "H₁ Huecos": "#3498db"},
+            size="Persistencia", size_max=18, opacity=0.75,
+            hover_data={"Persistencia": ":.3f"},
+            title="Diagrama de Persistencia — H₀ y H₁",
+            labels={"Nacimiento": "Nacimiento ε (km)", "Muerte": "Muerte ε (km)"},
+            height=450,
+        )
+        lim = max_ep * 1.05
+        # Diagonal (persistencia = 0, ruido)
+        fig_pd.add_shape(type="line", x0=0, y0=0, x1=lim, y1=lim,
+                        line=dict(color="gray", dash="dot", width=1))
+        # Umbral de significancia (persistencia = thresh)
+        fig_pd.add_shape(type="line", x0=0, y0=thresh, x1=lim - thresh, y1=lim,
+                        line=dict(color="#f39c12", dash="dash", width=1.5))
+        # Línea ε referencia
+        fig_pd.add_vline(x=eps_p, line_dash="dash", line_color="green", opacity=0.6,
+                        annotation_text=f"ε={eps_p}km", annotation_position="top right")
+        # Anotaciones de zonas
+        fig_pd.add_annotation(x=lim * 0.08, y=lim * 0.97,
+                            text="◀ Ruido (baja persistencia)", showarrow=False,
+                            font=dict(color="gray", size=11))
+        fig_pd.add_annotation(x=lim * 0.15, y=lim * 0.6,
+                            text="Huecos<br>significativos ▶", showarrow=False,
+                            font=dict(color="#f39c12", size=11))
+        fig_pd.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+        st.plotly_chart(fig_pd, width="stretch")
+        st.caption(
+            "**Diagonal punteada gris** = persistencia cero (ruido). "
+            "**Línea naranja** = umbral de significancia. "
+            "Los puntos azules (H₁) alejados de la diagonal son **huecos topológicos reales**."
+        )
+
+        st.divider()
 
     # ══════════════════════════════════════════════════════════════════════════
     # B. CURVAS DE BETTI
