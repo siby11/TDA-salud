@@ -154,12 +154,49 @@ def _compute_tda_full(pts_key: tuple):
     if len(res["cocycles"]) > 1:
         for cocycle in res["cocycles"][1]:
             if len(cocycle) > 0:
-                verts = set(int(v) for row in cocycle for v in row[:2])
-                h1_centers.append((
-                    float(pts[list(verts), 0].mean()),
-                    float(pts[list(verts), 1].mean()),
-                ))
+                verts     = sorted(set(int(v) for row in cocycle for v in row[:2]))
+                cycle_pts = pts[verts]
+                if len(verts) >= 3:
+                    center = _chebyshev_center_deg(cycle_pts)
+                else:
+                    center = (float(cycle_pts[:, 0].mean()), float(cycle_pts[:, 1].mean()))
+                h1_centers.append(center)
     return dgms_serial, D.tolist(), h1_centers
+
+
+def _chebyshev_center_deg(cycle_pts_deg: np.ndarray) -> tuple:
+    """
+    Centro de Chebyshev del casco convexo de los vértices del ciclo H1.
+    Es el centro del mayor círculo inscrito — más preciso que el centroide
+    cuando los vértices están distribuidos asimétricamente alrededor del hueco.
+    Opera en coordenadas km locales (isotrópicas) y devuelve (lat, lon) en grados.
+    """
+    from scipy.spatial import ConvexHull
+    from scipy.optimize import linprog
+    lat0   = float(cycle_pts_deg[:, 0].mean())
+    LAT_KM = 111.0
+    LON_KM = 111.0 * np.cos(np.radians(lat0))
+    pts_km = np.column_stack([cycle_pts_deg[:, 0] * LAT_KM,
+                               cycle_pts_deg[:, 1] * LON_KM])
+    try:
+        hull  = ConvexHull(pts_km)
+        A     = hull.equations[:, :2]
+        b_eq  = hull.equations[:, 2]
+        norms = np.linalg.norm(A, axis=1, keepdims=True)
+        # min -r  s.t.  [A | norms]*[x; r] <= -b_eq,  r >= 0
+        res = linprog(
+            np.array([0.0, 0.0, -1.0]),
+            A_ub=np.hstack([A, norms]),
+            b_ub=-b_eq,
+            bounds=[(None, None), (None, None), (0, None)],
+            method="highs",
+        )
+        if res.success:
+            return float(res.x[0] / LAT_KM), float(res.x[1] / LON_KM)
+    except Exception:
+        pass
+    return float(cycle_pts_deg[:, 0].mean()), float(cycle_pts_deg[:, 1].mean())
+
 
 def _dist_pt_seg(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
     """Distancia mínima del punto p al segmento a–b (en coords locales km)."""
@@ -921,7 +958,7 @@ with tab_complejos:
         )
         subsec_sel = st.selectbox("Subsector a analizar", subsec_opts, key="subsec_comp")
     with cc6:
-        max_pts = st.slider("Máximo de puntos", min_value=50, max_value=2500, value=600, step=50,
+        max_pts = st.slider("Máximo de puntos", min_value=50, max_value=2500, value=2100, step=50,
                             help="Limita el número de unidades para el cómputo TDA")
 
     # ── Filtrado unidades públicas ────────────────────────────────────────────
@@ -1282,17 +1319,7 @@ with tab_persist:
         )
         subsec_p = st.selectbox("Subsector", subsec_opts_p, key="subsec_persist")
     with pd0:
-        max_pts_p = st.slider("Máx. puntos", 50, 2500, 600, 50, key="maxpts_persist")
-
-    pd1, pd2 = st.columns([3, 2])
-    with pd1:
-        thresh = st.slider(
-            "Umbral de persistencia significativa (km)",
-            min_value=0.1, max_value=3.0, value=0.5, step=0.1,
-            help="Features con persistencia ≥ umbral se consideran huecos persistentes candidatos (no ruido)",
-        )
-    with pd2:
-        eps_p = st.slider("ε de referencia (km)", 0.25, 8.0, 1.5, 0.25, key="eps_persist")
+        max_pts_p = st.slider("Máx. puntos", 50, 2500, 2100, 50, key="maxpts_persist")
 
     # ── Filtrado ──────────────────────────────────────────────────────────────
     pub_p = denue[denue["sector"] == sector_p].dropna(subset=["latitud", "longitud"])
@@ -1310,7 +1337,7 @@ with tab_persist:
         st.warning("Muy pocas unidades para el análisis. Amplía el filtro.")
         st.stop()
 
-    # ── Cómputo TDA completo ─────────────────────────────────────────────────
+    # ── Cómputo TDA completo (antes del slider para calcular μ) ──────────────
     with st.spinner("Calculando persistencia…"):
         pts_p_key = tuple(map(tuple, pts_p))
         dgms_raw, D_p_list, h1_centers = _compute_tda_full(pts_p_key)
@@ -1321,8 +1348,6 @@ with tab_persist:
     max_ep = min(float(D_p.max()) if D_p.size else 15.0, 15.0)
 
     h1_pers = (h1_p[:, 1] - h1_p[:, 0]) if len(h1_p) else np.array([])
-    h1_sig  = h1_p[h1_pers >= thresh] if len(h1_p) else np.empty((0, 2))
-    n_sig   = len(h1_sig)
 
     # ── Estadísticas de vida de los huecos ────────────────────────────────────
     h1_pers_fin = h1_pers[~np.isinf(h1_pers)] if len(h1_pers) else np.array([])
@@ -1335,6 +1360,21 @@ with tab_persist:
     else:
         mu_pers = sigma_pers = thresh_sug = 0.0
         idx_repr = 0
+
+    # ── Controles fila 2 — umbral default = μ vida H₁ ────────────────────────
+    _thresh_default = float(np.round(np.clip(mu_pers, 0.1, 3.0), 1)) if mu_pers > 0 else 0.5
+    pd1, pd2 = st.columns([3, 2])
+    with pd1:
+        thresh = st.slider(
+            "Umbral de persistencia significativa (km)",
+            min_value=0.1, max_value=3.0, value=_thresh_default, step=0.1,
+            help=f"Huecos con persistencia ≥ umbral se consideran reales. Default = μ vida H₁ ({mu_pers:.2f} km).",
+        )
+    with pd2:
+        eps_p = st.slider("ε de referencia (km)", 0.25, 8.0, 1.5, 0.25, key="eps_persist")
+
+    h1_sig  = h1_p[h1_pers >= thresh] if len(h1_p) else np.empty((0, 2))
+    n_sig   = len(h1_sig)
 
     # ── KPIs ──────────────────────────────────────────────────────────────────
     kp1, kp2, kp3, kp4 = st.columns(4)
