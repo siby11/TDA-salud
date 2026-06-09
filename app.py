@@ -1044,8 +1044,7 @@ with tab_complejos:
     st.caption(
         f"**Azul**: zona de cobertura (radio ε/2 = {eps/2:.2f} km). "
         f"**Amarillo**: aristas del complejo (d ≤ {eps} km). "
-        f"**Puntos**: unidades de salud {sector_sel.lower()} por subsector. "
-        f"**Rojo**: huecos H₁ activos al ε actual (vacíos topológicos de cobertura)."
+        f"**Puntos**: unidades de salud {sector_sel.lower()} por subsector."
     )
 
     fig_vr = go.Figure()
@@ -1117,45 +1116,7 @@ with tab_complejos:
             legendgroup="unidades",
         ))
 
-    # Capa 4: huecos H₁ activos al ε actual
-    h1_arr = np.array(h1) if len(h1) else np.empty((0, 2))
-    if len(h1_arr) and len(h1_centers_map):
-        alive_mask = (h1_arr[:, 0] <= eps) & ((h1_arr[:, 1] > eps) | np.isinf(h1_arr[:, 1]))
-        n_c = min(len(h1_centers_map), len(h1_arr))
-        active_centers = [h1_centers_map[i] for i in range(n_c) if alive_mask[i]]
-    else:
-        active_centers = []
 
-    if active_centers:
-        hole_lats_c = [c[0] for c in active_centers]
-        hole_lons_c = [c[1] for c in active_centers]
-
-        # Anillos rojos indicando la zona del hueco
-        ring_lats, ring_lons = [], []
-        for rlat, rlon in zip(hole_lats_c, hole_lons_c):
-            rl, ro = _circles([rlat], [rlon], eps * 0.45)
-            ring_lats += rl
-            ring_lons += ro
-        fig_vr.add_trace(go.Scattermapbox(
-            lat=ring_lats, lon=ring_lons,
-            mode="lines",
-            line=dict(color="rgba(231,76,60,0.75)", width=2),
-            fill="toself",
-            fillcolor="rgba(231,76,60,0.13)",
-            name=f"Huecos H₁ activos ({len(active_centers)})",
-            hoverinfo="skip",
-            legendgroup="huecos",
-        ))
-
-        # Marcadores centrales de cada hueco
-        fig_vr.add_trace(go.Scattermapbox(
-            lat=hole_lats_c, lon=hole_lons_c,
-            mode="markers",
-            marker=dict(size=13, color="#e74c3c", opacity=0.9),
-            name="Centro hueco H₁",
-            hovertemplate="<b>Hueco H₁</b><br>ε activo = " + str(eps) + " km<extra></extra>",
-            legendgroup="huecos",
-        ))
 
     center_lat = float(np.mean(lats)) if lats else 19.43
     center_lon = float(np.mean(lons)) if lons else -99.13
