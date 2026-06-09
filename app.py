@@ -1165,6 +1165,117 @@ with tab_complejos:
 
     st.divider()
 
+    # ── Mapa con huecos H₁ (desplegable) ─────────────────────────────────────
+    with st.expander("Ver mapa con huecos H₁ activos marcados"):
+        h1_arr = np.array(h1) if len(h1) else np.empty((0, 2))
+        if len(h1_arr) and len(h1_centers_map):
+            alive_mask = (h1_arr[:, 0] <= eps) & ((h1_arr[:, 1] > eps) | np.isinf(h1_arr[:, 1]))
+            n_c = min(len(h1_centers_map), len(h1_arr))
+            active_centers = [h1_centers_map[i] for i in range(n_c) if alive_mask[i]]
+        else:
+            active_centers = []
+
+        st.caption(
+            f"**Azul**: zona de cobertura (radio ε/2 = {eps/2:.2f} km). "
+            f"**Amarillo**: aristas del complejo (d ≤ {eps} km). "
+            f"**Puntos**: unidades de salud. "
+            f"**Rojo**: huecos H₁ activos al ε actual ({len(active_centers)} huecos)."
+        )
+
+        fig_holes = go.Figure()
+
+        # Capa rezago (fondo)
+        if show_rezago_layer and len(ageb_pts) > 0:
+            for grado, color in COLORS.items():
+                sub_ag = ageb_geo[ageb_geo["grado_rezago_social"] == grado]
+                if sub_ag.empty:
+                    continue
+                fig_holes.add_trace(go.Scattermapbox(
+                    lat=sub_ag["centroide_lat"].tolist(),
+                    lon=sub_ag["centroide_lon"].tolist(),
+                    mode="markers",
+                    marker=dict(size=6, color=color, opacity=0.3),
+                    name=f"Rezago {grado}",
+                    hovertemplate=f"Rezago: {grado}<extra></extra>",
+                    legendgroup="rezago",
+                ))
+
+        # Círculos de cobertura
+        c_lats2, c_lons2 = _circles(lats, lons, eps / 2)
+        fig_holes.add_trace(go.Scattermapbox(
+            lat=c_lats2, lon=c_lons2,
+            mode="lines",
+            line=dict(color="rgba(52,152,219,0.35)", width=1),
+            fill="toself",
+            fillcolor="rgba(52,152,219,0.07)",
+            name=f"Cobertura ε/2={eps/2:.2f} km",
+            hoverinfo="skip",
+            legendgroup="vr",
+        ))
+
+        # Aristas VR
+        if e_lats:
+            fig_holes.add_trace(go.Scattermapbox(
+                lat=e_lats, lon=e_lons,
+                mode="lines",
+                line=dict(color="rgba(241,196,15,0.55)", width=1),
+                name="Aristas VR",
+                hoverinfo="skip",
+                legendgroup="vr",
+            ))
+
+        # Puntos por subsector
+        for subsec, sc in SUBSEC_COL.items():
+            sub_pts = pub_f[pub_f["subsector"] == subsec]
+            if sub_pts.empty:
+                continue
+            fig_holes.add_trace(go.Scattermapbox(
+                lat=sub_pts["latitud"].tolist(),
+                lon=sub_pts["longitud"].tolist(),
+                mode="markers",
+                marker=dict(size=7, color=sc),
+                name=subsec,
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "Municipio: %{customdata[1]}<br>"
+                    "Personal: %{customdata[2]}<extra></extra>"
+                ),
+                customdata=sub_pts[["nom_estab", "municipio", "per_ocu"]].values.tolist(),
+                legendgroup="unidades",
+            ))
+
+        # Huecos H₁
+        if active_centers:
+            hole_lats_c = [c[0] for c in active_centers]
+            hole_lons_c = [c[1] for c in active_centers]
+            ring_lats, ring_lons = [], []
+            for rlat, rlon in zip(hole_lats_c, hole_lons_c):
+                rl, ro = _circles([rlat], [rlon], eps * 0.45)
+                ring_lats += rl
+                ring_lons += ro
+            fig_holes.add_trace(go.Scattermapbox(
+                lat=ring_lats, lon=ring_lons,
+                mode="lines",
+                line=dict(color="rgba(231,76,60,0.85)", width=2),
+                fill="toself",
+                fillcolor="rgba(231,76,60,0.18)",
+                name=f"Huecos H₁ activos ({len(active_centers)})",
+                hoverinfo="skip",
+                legendgroup="huecos",
+            ))
+
+        fig_holes.update_layout(
+            mapbox=dict(
+                style="carto-positron",
+                center=dict(lat=center_lat, lon=center_lon),
+                zoom=11 if mun_sel != "CDMX completa" else 10,
+            ),
+            height=560,
+            margin=dict(l=0, r=0, t=0, b=0),
+            legend=dict(bgcolor="rgba(255,255,255,0.85)", font=dict(size=11)),
+        )
+        st.plotly_chart(fig_holes, width="stretch")
+
     # ══════════════════════════════════════════════════════════════════════════
     # C. Cobertura y Rezago Social
     # ══════════════════════════════════════════════════════════════════════════
