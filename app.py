@@ -2163,7 +2163,7 @@ $$I(H_i) = 0.44 \\cdot P_i + 0.28 \\cdot B_i + 0.17 \\cdot D_i + 0.11 \\cdot N_i
             })
 
     _df_top_sens = pd.DataFrame(_rows_top_sens)
-    st.dataframe(_df_top_sens)
+    # st.dataframe(_df_top_sens)
 
     _labels_top_sens = [
         _label
@@ -2196,7 +2196,7 @@ $$I(H_i) = 0.44 \\cdot P_i + 0.28 \\cdot B_i + 0.17 \\cdot D_i + 0.11 \\cdot N_i
         "Hueco", "apariciones_top", "robustez_pct", "clasificacion_robustez",
         "persistence", "tipo", "grado_rezago", "grado_ids", "contexto",
     ]]
-    st.dataframe(_df_robustez)
+    # st.dataframe(_df_robustez)
 
     if len(_df_robustez) > 0:
         _fig_robustez = px.bar(
