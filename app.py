@@ -3235,38 +3235,56 @@ with tab_concl:
         _n_sig_exec = 0
         _max_p_exec = 0.0
 
-    # Alcaldía más vulnerable = la que tiene más huecos H1 significativos.
-    # Para cada hueco, se asigna la alcaldía de la unidad pública más cercana a su centro.
+    # ── Índice topológico por alcaldía ──────────────────────────────────────
+    # I(H) = n_huecos × persistencia_media × rezago_promedio
+    # Cada hueco significativo se asigna a la alcaldía de la unidad pública
+    # más cercana a su centro (coordenadas Chebyshev de _compute_tda_full).
+    _rez_num_map = {"Muy bajo": 1, "Bajo": 2, "Medio": 3, "Alto": 4, "Muy alto": 5}
+    _ageb_by_mun = coneval.copy()
+    _ageb_by_mun["mun_code"] = _ageb_by_mun["cvegeo"].astype(str).str[2:5]
+    _ageb_by_mun["mun_name"] = _ageb_by_mun["mun_code"].map(MUN_MAP)
+    _rez_by_mun = (
+        _ageb_by_mun.dropna(subset=["mun_name"])
+        .assign(rez_num=lambda df: df["grado_rezago_social"].map(_rez_num_map).astype(float))
+        .groupby("mun_name")["rez_num"]
+        .mean()
+    )
+
     _pub_exec_idx = _pub_exec.reset_index(drop=True)
-    _pub_coords = _pub_exec_idx[["latitud", "longitud"]].values
-    _hole_muns = []
+    _pub_coords   = _pub_exec_idx[["latitud", "longitud"]].values
+
+    _hole_rows = []  # (municipio, persistencia)
     if len(_h1c_exec) > 0 and len(_h1p_exec) > 0:
         _sig_mask = (_h1p_exec >= _thr_exec) & ~np.isinf(_h1p_exec)
-        _sig_centers = [_h1c_exec[i] for i in range(len(_h1c_exec)) if i < len(_sig_mask) and _sig_mask[i]]
-        for _clat, _clon in _sig_centers:
-            _dists = np.sqrt((_pub_coords[:, 0] - _clat) ** 2 + (_pub_coords[:, 1] - _clon) ** 2)
-            _nearest_idx = int(_dists.argmin())
-            _hole_muns.append(_pub_exec_idx.loc[_nearest_idx, "municipio"])
+        for _i, (_clat, _clon) in enumerate(_h1c_exec):
+            if _i < len(_sig_mask) and _sig_mask[_i]:
+                _dists = np.sqrt((_pub_coords[:, 0] - _clat) ** 2 + (_pub_coords[:, 1] - _clon) ** 2)
+                _mun   = _pub_exec_idx.loc[int(_dists.argmin()), "municipio"]
+                _hole_rows.append({"municipio": _mun, "persistencia": float(_h1p_exec[_i])})
 
-    if _hole_muns:
-        _holes_by_mun = pd.Series(_hole_muns).value_counts()
-        _worst_mun = str(_holes_by_mun.idxmax())
-    else:
-        # Fallback: rezago / densidad
-        _rez_num_map = {"Muy bajo": 1, "Bajo": 2, "Medio": 3, "Alto": 4, "Muy alto": 5}
-        _ageb_by_mun = coneval.copy()
-        _ageb_by_mun["mun_code"] = _ageb_by_mun["cvegeo"].astype(str).str[2:5]
-        _ageb_by_mun["mun_name"] = _ageb_by_mun["mun_code"].map(MUN_MAP)
-        _rez_score = (
-            _ageb_by_mun.dropna(subset=["mun_name"])
-            .assign(rez_num=lambda df: df["grado_rezago_social"].map(_rez_num_map).astype(float))
-            .groupby("mun_name")["rez_num"]
-            .mean()
+    if _hole_rows:
+        _df_holes = pd.DataFrame(_hole_rows)
+        _df_rank = (
+            _df_holes.groupby("municipio")["persistencia"]
+            .agg(n_huecos="count", persist_total="sum", persist_media="mean")
+            .reset_index()
         )
-        _pub_by_mun = _pub_exec.groupby("municipio").size()
-        _pub_density = _pub_by_mun / (_ageb_by_mun.groupby("mun_name").size().replace(0, np.nan))
-        _vuln_score = _rez_score / (_pub_density + 1e-9)
-        _worst_mun = str(_vuln_score.idxmax()) if len(_vuln_score) else "Xochimilco"
+        _df_rank["rezago"] = _df_rank["municipio"].map(_rez_by_mun).fillna(_rez_by_mun.mean())
+        _df_rank["I_H"] = _df_rank["n_huecos"] * _df_rank["persist_media"] * _df_rank["rezago"]
+        _max_ih = _df_rank["I_H"].max()
+        if _max_ih > 0:
+            _df_rank["I_H_norm"] = (_df_rank["I_H"] / _max_ih * 100).round(1)
+        else:
+            _df_rank["I_H_norm"] = 0.0
+        _df_rank = _df_rank.sort_values("I_H_norm", ascending=False).reset_index(drop=True)
+        _worst_mun = str(_df_rank.loc[0, "municipio"])
+    else:
+        _df_rank = pd.DataFrame()
+        # Fallback: rezago / densidad
+        _pub_by_mun   = _pub_exec.groupby("municipio").size()
+        _pub_density  = _pub_by_mun / (_ageb_by_mun.groupby("mun_name").size().replace(0, np.nan))
+        _vuln_score   = _rez_by_mun / (_pub_density + 1e-9)
+        _worst_mun    = str(_vuln_score.idxmax()) if len(_vuln_score) else "Xochimilco"
 
     # ══════════════════════════════════════════════════════════════════════════
     # 1. RESUMEN EJECUTIVO
@@ -3314,8 +3332,10 @@ with tab_concl:
         (
             "#6c5ce7",
             "3. La vulnerabilidad social aumenta la prioridad de intervención",
-            f"**{_worst_mun}** aparece como la alcaldía más vulnerable porque combina menor cobertura relativa "
-            f"con condiciones sociales menos favorables. El problema no es solo geográfico, también es social."
+            f"**{_worst_mun}** encabeza el ranking según el índice I(H) = n° huecos × persistencia media × "
+            f"rezago social. Concentra los vacíos topológicos más persistentes en las zonas con mayor "
+            f"rezago social, lo que la convierte en la prioridad número uno de intervención. "
+            f"Ver tabla completa en la sección 2."
         ),
     ]
 
@@ -3332,10 +3352,78 @@ with tab_concl:
     st.divider()
 
     # ══════════════════════════════════════════════════════════════════════════
+    # 2b. RANKING POR ALCALDÍA — Índice I(H)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    st.subheader("2 · Ranking de alcaldías por vulnerabilidad topológica")
+    st.caption(
+        "El índice I(H) = n° huecos × persistencia media × rezago social (1–5). "
+        "Combina la evidencia topológica con el contexto socioeconómico."
+    )
+
+    st.markdown(
+        "<div style='background:#fff3cd;border-left:4px solid #f39c12;"
+        "padding:10px 14px;border-radius:4px;margin-bottom:12px;font-size:0.88em'>"
+        "<b>¿Por qué este índice?</b> El mapa de huecos H₁ muestra su ubicación, pero no determina "
+        "por sí solo qué alcaldía es la más afectada. Para eso se necesita agrupar los huecos por "
+        "alcaldía, ponderar su persistencia (gravedad topológica) y cruzar con rezago social "
+        "(gravedad socioeconómica). La alcaldía con mayor I(H) es la que concentra vacíos más "
+        "graves en zonas de mayor vulnerabilidad.</div>",
+        unsafe_allow_html=True,
+    )
+
+    if not _df_rank.empty:
+        _tbl_rows = ""
+        for _ri, _row in _df_rank.iterrows():
+            _bar_w  = max(4, int(_row["I_H_norm"]))
+            _bar_c  = "#d63031" if _row["I_H_norm"] >= 70 else ("#e17055" if _row["I_H_norm"] >= 40 else "#fdcb6e")
+            _rank_n = _ri + 1
+            _medal  = "1" if _rank_n == 1 else ("2" if _rank_n == 2 else ("3" if _rank_n == 3 else str(_rank_n)))
+            _tbl_rows += (
+                f"<tr style='background:{'#fff5f5' if _rank_n == 1 else ('#fff' if _ri % 2 == 0 else '#f8f9fa')}'>"
+                f"<td style='padding:7px 10px;text-align:center'>{_medal}</td>"
+                f"<td style='padding:7px 10px;font-weight:{'700' if _rank_n == 1 else '400'}'>{_row['municipio']}</td>"
+                f"<td style='padding:7px 10px;text-align:center'>{int(_row['n_huecos'])}</td>"
+                f"<td style='padding:7px 10px;text-align:center'>{_row['persist_total']:.2f} km</td>"
+                f"<td style='padding:7px 10px;text-align:center'>{_row['persist_media']:.2f} km</td>"
+                f"<td style='padding:7px 10px;text-align:center'>{_row['rezago']:.2f}</td>"
+                f"<td style='padding:7px 10px'>"
+                f"<div style='display:flex;align-items:center;gap:6px'>"
+                f"<div style='width:{_bar_w}%;background:{_bar_c};height:14px;border-radius:3px;min-width:4px'></div>"
+                f"<span style='font-weight:600;color:{_bar_c}'>{_row['I_H_norm']}</span>"
+                f"</div></td>"
+                f"</tr>"
+            )
+        _tbl_head = (
+            "<tr style='background:#2d3436;color:#fff'>"
+            "<th style='padding:8px 10px'>#</th>"
+            "<th style='padding:8px 10px;text-align:left'>Alcaldía</th>"
+            "<th style='padding:8px 10px'>Huecos H₁</th>"
+            "<th style='padding:8px 10px'>Persist. total</th>"
+            "<th style='padding:8px 10px'>Persist. media</th>"
+            "<th style='padding:8px 10px'>Rezago (1–5)</th>"
+            "<th style='padding:8px 10px;text-align:left'>I(H) normalizado</th>"
+            "</tr>"
+        )
+        st.markdown(
+            f"<table style='width:100%;border-collapse:collapse;font-size:0.88em'>"
+            f"<thead>{_tbl_head}</thead><tbody>{_tbl_rows}</tbody></table>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"I(H) = n_huecos × persistencia_media × rezago_promedio — normalizado a 100 sobre el máximo. "
+            f"Alcaldía #1: **{_worst_mun}**."
+        )
+    else:
+        st.info("No se encontraron huecos significativos para construir el ranking.")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
     # 3. ¿POR QUÉ TDA?
     # ══════════════════════════════════════════════════════════════════════════
 
-    st.subheader("2 · ¿Por qué TDA es el método indicado?")
+    st.subheader("3 · ¿Por qué TDA es el método indicado?")
     st.caption(
         "TDA es útil porque analiza la forma de la red, no solamente la distancia o la similitud entre zonas."
     )
@@ -3407,7 +3495,7 @@ with tab_concl:
     # 4. ESTRATEGIA DE INTERVENCIÓN
     # ══════════════════════════════════════════════════════════════════════════
 
-    st.subheader("3 · Estrategia de intervención")
+    st.subheader("4 · Estrategia de intervención")
 
     st.markdown(
         """
@@ -3474,7 +3562,7 @@ identificar dónde están las brechas, medir cuáles son más importantes y deci
     # 5. CIERRE EJECUTIVO
     # ══════════════════════════════════════════════════════════════════════════
 
-    st.subheader("4 · Cierre ejecutivo")
+    st.subheader("5 · Cierre ejecutivo")
 
     st.markdown(
         f"<div style='background:#2d3436;color:#dfe6e9;padding:20px 24px;"
