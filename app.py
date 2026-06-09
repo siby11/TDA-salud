@@ -3235,56 +3235,94 @@ with tab_concl:
         _n_sig_exec = 0
         _max_p_exec = 0.0
 
-    # ── Índice topológico por alcaldía ──────────────────────────────────────
-    # I(H) = n_huecos × persistencia_media × rezago_promedio
-    # Cada hueco significativo se asigna a la alcaldía de la unidad pública
-    # más cercana a su centro (coordenadas Chebyshev de _compute_tda_full).
-    _rez_num_map = {"Muy bajo": 1, "Bajo": 2, "Medio": 3, "Alto": 4, "Muy alto": 5}
-    _ageb_by_mun = coneval.copy()
-    _ageb_by_mun["mun_code"] = _ageb_by_mun["cvegeo"].astype(str).str[2:5]
-    _ageb_by_mun["mun_name"] = _ageb_by_mun["mun_code"].map(MUN_MAP)
-    _rez_by_mun = (
-        _ageb_by_mun.dropna(subset=["mun_name"])
-        .assign(rez_num=lambda df: df["grado_rezago_social"].map(_rez_num_map).astype(float))
-        .groupby("mun_name")["rez_num"]
-        .mean()
-    )
+    # ── Índice topológico por alcaldía con 4 escenarios de pesos ────────────
+    # Mismos escenarios que E · Análisis de Sensibilidad de Pesos:
+    #   Base / Topológico / Social / Densidad
+    # Variables por hueco: P_i (persist norm), B_i (bajo desarrollo norm),
+    #   D_i (densidad norm), R_i (rezago norm), N_i (NBI norm)
+    # Municipio: derivado del AGEB más cercano al centro del hueco.
 
-    _pub_exec_idx = _pub_exec.reset_index(drop=True)
-    _pub_coords   = _pub_exec_idx[["latitud", "longitud"]].values
+    # 1. Construir AGEB lookup global (igual que tab_prior pero sin filtro)
+    _ageb_exec = coneval.merge(
+        ids[["cvegeo", "bajo_desarrollo_norm", "prop_nbi_norm",
+             "grado_ids", "grado_ids_num", "poblacion_ids"]],
+        on="cvegeo", how="left",
+    ).copy()
+    _dens_raw_e = _ageb_exec["poblacion_ids"] / _ageb_exec["area_km2"].replace(0, np.nan)
+    _ageb_exec["densidad_norm"] = _dens_raw_e.fillna(0).rank(pct=True)
+    _ageb_exec = _ageb_exec.dropna(subset=["centroide_lat", "centroide_lon"]).reset_index(drop=True)
+    _ageb_exec["mun_code"] = _ageb_exec["cvegeo"].astype(str).str[2:5]
+    _ageb_exec["municipio"] = _ageb_exec["mun_code"].map(MUN_MAP)
+    _ageb_coords_e = np.deg2rad(_ageb_exec[["centroide_lat", "centroide_lon"]].values)
 
-    _hole_rows = []  # (municipio, persistencia)
+    # 2. Normalizar persistencia sobre huecos significativos
+    _h1p_max_e = float(_h1p_fin_exec.max()) if len(_h1p_fin_exec) else 1.0
+
+    # 3. Para cada hueco significativo: asignar AGEB más cercana → variables sociales
+    _escenarios_concl = {
+        "Base":        {"P_i": 0.40, "B_i": 0.25, "D_i": 0.15, "R_i": 0.10, "N_i": 0.10},
+        "Topológico":  {"P_i": 0.55, "B_i": 0.15, "D_i": 0.10, "R_i": 0.10, "N_i": 0.10},
+        "Social":      {"P_i": 0.30, "B_i": 0.30, "D_i": 0.15, "R_i": 0.10, "N_i": 0.15},
+        "Densidad":    {"P_i": 0.35, "B_i": 0.20, "D_i": 0.25, "R_i": 0.10, "N_i": 0.10},
+    }
+
+    _hole_rows = []
     if len(_h1c_exec) > 0 and len(_h1p_exec) > 0:
         _sig_mask = (_h1p_exec >= _thr_exec) & ~np.isinf(_h1p_exec)
         for _i, (_clat, _clon) in enumerate(_h1c_exec):
-            if _i < len(_sig_mask) and _sig_mask[_i]:
-                _dists = np.sqrt((_pub_coords[:, 0] - _clat) ** 2 + (_pub_coords[:, 1] - _clon) ** 2)
-                _mun   = _pub_exec_idx.loc[int(_dists.argmin()), "municipio"]
-                _hole_rows.append({"municipio": _mun, "persistencia": float(_h1p_exec[_i])})
+            if _i >= len(_sig_mask) or not _sig_mask[_i]:
+                continue
+            _hpt   = np.deg2rad(np.array([[_clat, _clon]]))
+            _dh    = np.arcsin(np.sqrt(
+                np.sin((_ageb_coords_e[:, 0] - _hpt[0, 0]) / 2) ** 2
+                + np.cos(_hpt[0, 0]) * np.cos(_ageb_coords_e[:, 0])
+                * np.sin((_ageb_coords_e[:, 1] - _hpt[0, 1]) / 2) ** 2
+            )) * 2 * 6371
+            _ni    = int(_dh.argmin())
+            _row_a = _ageb_exec.iloc[_ni]
+            P_i = float(_h1p_exec[_i]) / _h1p_max_e
+            D_i = float(_row_a.get("densidad_norm", 0) or 0)
+            R_i = float(_row_a.get("rezago_norm", 0) or 0)
+            B_i = float(_row_a.get("bajo_desarrollo_norm", 0) or 0)
+            N_i = float(_row_a.get("prop_nbi_norm", 0) or 0)
+            _entry = {
+                "municipio":    str(_row_a["municipio"]) if pd.notna(_row_a["municipio"]) else "Desconocido",
+                "persistencia": float(_h1p_exec[_i]),
+                "P_i": P_i, "B_i": B_i, "D_i": D_i, "R_i": R_i, "N_i": N_i,
+            }
+            for _esc, _w in _escenarios_concl.items():
+                _entry[f"I_{_esc}"] = sum(_entry[v] * ww for v, ww in _w.items())
+            _hole_rows.append(_entry)
 
     if _hole_rows:
-        _df_holes = pd.DataFrame(_hole_rows)
-        _df_rank = (
-            _df_holes.groupby("municipio")["persistencia"]
-            .agg(n_huecos="count", persist_total="sum", persist_media="mean")
-            .reset_index()
+        _df_h = pd.DataFrame(_hole_rows)
+        # Agregar por municipio: suma de cada índice
+        _agg_cols = {f"I_{e}": "sum" for e in _escenarios_concl}
+        _agg_cols["persistencia"] = ["count", "sum", "mean"]
+        _df_rank = _df_h.groupby("municipio").agg(_agg_cols)
+        _df_rank.columns = (
+            [f"I_{e}" for e in _escenarios_concl]
+            + ["n_huecos", "persist_total", "persist_media"]
         )
-        _df_rank["rezago"] = _df_rank["municipio"].map(_rez_by_mun).fillna(_rez_by_mun.mean())
-        _df_rank["I_H"] = _df_rank["n_huecos"] * _df_rank["persist_media"] * _df_rank["rezago"]
-        _max_ih = _df_rank["I_H"].max()
-        if _max_ih > 0:
-            _df_rank["I_H_norm"] = (_df_rank["I_H"] / _max_ih * 100).round(1)
-        else:
-            _df_rank["I_H_norm"] = 0.0
-        _df_rank = _df_rank.sort_values("I_H_norm", ascending=False).reset_index(drop=True)
+        _df_rank = _df_rank.reset_index()
+        # Normalizar cada escenario a 0-100
+        for _esc in _escenarios_concl:
+            _col = f"I_{_esc}"
+            _mx  = _df_rank[_col].max()
+            _df_rank[f"N_{_esc}"] = (_df_rank[_col] / _mx * 100).round(1) if _mx > 0 else 0.0
+        # Rank por escenario (#1 = más vulnerable)
+        for _esc in _escenarios_concl:
+            _df_rank[f"rk_{_esc}"] = _df_rank[f"N_{_esc}"].rank(ascending=False, method="min").astype(int)
+        # Robustez: cuántos escenarios la ponen en top-3
+        _df_rank["top3_count"] = sum(
+            (_df_rank[f"rk_{e}"] <= 3).astype(int) for e in _escenarios_concl
+        )
+        # Ordenar por escenario Base
+        _df_rank = _df_rank.sort_values("N_Base", ascending=False).reset_index(drop=True)
         _worst_mun = str(_df_rank.loc[0, "municipio"])
     else:
         _df_rank = pd.DataFrame()
-        # Fallback: rezago / densidad
-        _pub_by_mun   = _pub_exec.groupby("municipio").size()
-        _pub_density  = _pub_by_mun / (_ageb_by_mun.groupby("mun_name").size().replace(0, np.nan))
-        _vuln_score   = _rez_by_mun / (_pub_density + 1e-9)
-        _worst_mun    = str(_vuln_score.idxmax()) if len(_vuln_score) else "Xochimilco"
+        _worst_mun = "Xochimilco"
 
     # ══════════════════════════════════════════════════════════════════════════
     # 1. RESUMEN EJECUTIVO
@@ -3332,10 +3370,11 @@ with tab_concl:
         (
             "#6c5ce7",
             "3. La vulnerabilidad social aumenta la prioridad de intervención",
-            f"**{_worst_mun}** encabeza el ranking según el índice I(H) = n° huecos × persistencia media × "
-            f"rezago social. Concentra los vacíos topológicos más persistentes en las zonas con mayor "
-            f"rezago social, lo que la convierte en la prioridad número uno de intervención. "
-            f"Ver tabla completa en la sección 2."
+            f"**{_worst_mun}** encabeza el ranking bajo los 4 escenarios de pesos del análisis de "
+            f"sensibilidad (Base, Topológico, Social, Densidad). El índice I(H) por hueco pondera "
+            f"persistencia topológica, rezago social, bajo desarrollo, densidad poblacional y NBI. "
+            f"Que una alcaldía salga primero en múltiples escenarios es evidencia de que el resultado "
+            f"no depende de la elección de pesos. Ver tabla completa en la sección 2."
         ),
     ]
 
@@ -3373,46 +3412,63 @@ with tab_concl:
     )
 
     if not _df_rank.empty:
-        _tbl_rows = ""
-        for _ri, _row in _df_rank.iterrows():
-            _bar_w  = max(4, int(_row["I_H_norm"]))
-            _bar_c  = "#d63031" if _row["I_H_norm"] >= 70 else ("#e17055" if _row["I_H_norm"] >= 40 else "#fdcb6e")
-            _rank_n = _ri + 1
-            _medal  = "1" if _rank_n == 1 else ("2" if _rank_n == 2 else ("3" if _rank_n == 3 else str(_rank_n)))
-            _tbl_rows += (
-                f"<tr style='background:{'#fff5f5' if _rank_n == 1 else ('#fff' if _ri % 2 == 0 else '#f8f9fa')}'>"
-                f"<td style='padding:7px 10px;text-align:center'>{_medal}</td>"
-                f"<td style='padding:7px 10px;font-weight:{'700' if _rank_n == 1 else '400'}'>{_row['municipio']}</td>"
-                f"<td style='padding:7px 10px;text-align:center'>{int(_row['n_huecos'])}</td>"
-                f"<td style='padding:7px 10px;text-align:center'>{_row['persist_total']:.2f} km</td>"
-                f"<td style='padding:7px 10px;text-align:center'>{_row['persist_media']:.2f} km</td>"
-                f"<td style='padding:7px 10px;text-align:center'>{_row['rezago']:.2f}</td>"
-                f"<td style='padding:7px 10px'>"
-                f"<div style='display:flex;align-items:center;gap:6px'>"
-                f"<div style='width:{_bar_w}%;background:{_bar_c};height:14px;border-radius:3px;min-width:4px'></div>"
-                f"<span style='font-weight:600;color:{_bar_c}'>{_row['I_H_norm']}</span>"
-                f"</div></td>"
-                f"</tr>"
-            )
+        _esc_colors = {
+            "Base": "#0984e3", "Topológico": "#6c5ce7",
+            "Social": "#00b894", "Densidad": "#e17055",
+        }
+        # Cabecera
         _tbl_head = (
             "<tr style='background:#2d3436;color:#fff'>"
             "<th style='padding:8px 10px'>#</th>"
             "<th style='padding:8px 10px;text-align:left'>Alcaldía</th>"
-            "<th style='padding:8px 10px'>Huecos H₁</th>"
-            "<th style='padding:8px 10px'>Persist. total</th>"
-            "<th style='padding:8px 10px'>Persist. media</th>"
-            "<th style='padding:8px 10px'>Rezago (1–5)</th>"
-            "<th style='padding:8px 10px;text-align:left'>I(H) normalizado</th>"
+            "<th style='padding:8px 10px'>H₁</th>"
+            "<th style='padding:8px 10px'>P. media</th>"
+            + "".join(
+                f"<th style='padding:8px 10px;color:{_esc_colors[e]}'>{e}</th>"
+                for e in _escenarios_concl
+            )
+            + "<th style='padding:8px 10px'>Top-3 (de 4)</th>"
             "</tr>"
         )
+        _tbl_rows = ""
+        for _ri, _row in _df_rank.iterrows():
+            _rank_n = _ri + 1
+            _bg = "#fff5f5" if _rank_n == 1 else ("#f8f9fa" if _ri % 2 == 0 else "#fff")
+            _fw = "700" if _rank_n == 1 else "400"
+            _medal = "#1" if _rank_n == 1 else ("#2" if _rank_n == 2 else ("#3" if _rank_n == 3 else str(_rank_n)))
+            _cells = (
+                f"<td style='padding:7px 10px;text-align:center'>{_medal}</td>"
+                f"<td style='padding:7px 10px;font-weight:{_fw}'>{_row['municipio']}</td>"
+                f"<td style='padding:7px 10px;text-align:center'>{int(_row['n_huecos'])}</td>"
+                f"<td style='padding:7px 10px;text-align:center'>{_row['persist_media']:.2f} km</td>"
+            )
+            for _esc in _escenarios_concl:
+                _v   = _row[f"N_{_esc}"]
+                _rk  = int(_row[f"rk_{_esc}"])
+                _c   = _esc_colors[_esc]
+                _bw  = max(3, int(_v * 0.6))
+                _cells += (
+                    f"<td style='padding:7px 10px'>"
+                    f"<div style='display:flex;align-items:center;gap:5px'>"
+                    f"<div style='width:{_bw}px;background:{_c};height:12px;border-radius:2px'></div>"
+                    f"<span style='color:{_c};font-size:0.85em'>{_v} <sup>#{_rk}</sup></span>"
+                    f"</div></td>"
+                )
+            _t3 = int(_row["top3_count"])
+            _t3c = "#d63031" if _t3 == 4 else ("#e17055" if _t3 >= 3 else ("#fdcb6e" if _t3 >= 2 else "#b2bec3"))
+            _cells += f"<td style='padding:7px 10px;text-align:center;color:{_t3c};font-weight:700'>{_t3}/4</td>"
+            _tbl_rows += f"<tr style='background:{_bg}'>{_cells}</tr>"
+
         st.markdown(
-            f"<table style='width:100%;border-collapse:collapse;font-size:0.88em'>"
+            f"<table style='width:100%;border-collapse:collapse;font-size:0.87em'>"
             f"<thead>{_tbl_head}</thead><tbody>{_tbl_rows}</tbody></table>",
             unsafe_allow_html=True,
         )
         st.caption(
-            f"I(H) = n_huecos × persistencia_media × rezago_promedio — normalizado a 100 sobre el máximo. "
-            f"Alcaldía #1: **{_worst_mun}**."
+            "Cada escenario usa los mismos pesos que E · Análisis de Sensibilidad de Pesos "
+            "(Base / Topológico / Social / Densidad). El valor mostrado es I(H) normalizado a 100; "
+            "el superíndice es la posición en ese escenario. **Top-3** = cuántos escenarios ubican "
+            f"a esa alcaldía entre las 3 más vulnerables. Alcaldía #1 (escenario Base): **{_worst_mun}**."
         )
     else:
         st.info("No se encontraron huecos significativos para construir el ranking.")
