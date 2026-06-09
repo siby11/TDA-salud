@@ -1764,27 +1764,6 @@ with tab_prior:
     with _tc2:
         st.metric("Umbral sugerido (μ + ½σ)", f"{_tsug_pr:.3f} km")
 
-    with st.expander("¿Cómo se calcula el umbral sugerido?", expanded=False):
-        if len(_h1p_pr_fin) >= 2:
-            _diff_pr = thresh_pr - _tsug_pr
-            _delta_pr = f"Manual: {thresh_pr:.2f} km ({'+' if _diff_pr >= 0 else ''}{_diff_pr:.2f})" if abs(_diff_pr) > 0.01 else "*(= sugerido)*"
-            st.markdown(f"""
-**Fórmula:** $\\text{{Umbral}} = \\mu_{{H_1}} + \\tfrac{{1}}{{2}}\\,\\sigma_{{H_1}}$
-
-| Estadístico | Valor |
-|---|---|
-| Media de vidas H₁ (μ) | **{_mu_pr:.4f} km** |
-| Desv. estándar (σ) | **{_sigma_pr:.4f} km** |
-| ½ σ | **{0.5 * _sigma_pr:.4f} km** |
-| **Umbral = μ + ½σ** | **{_tsug_pr:.4f} km** |
-| Umbral actual (slider) | **{thresh_pr:.2f} km** — {_delta_pr} |
-
-La media μ es el promedio de vida de todos los huecos H₁. Sumar ½σ filtra el ruido topológico reteniendo solo los huecos más persistentes (~30–35%).
-> Se **recalcula automáticamente** al cambiar los filtros.
-""")
-        else:
-            st.info("No hay suficientes huecos H₁ para calcular estadísticas (se necesitan ≥ 2).")
-
     _h1c_arr  = np.array(_h1c_pr[:len(_h1_pr)]) if len(_h1c_pr) else np.empty((0, 2))
     _bd_pr    = _border_dists(_h1c_arr, _pts_pr) if len(_h1c_arr) else np.array([])
     _int_mask = (
@@ -2077,14 +2056,7 @@ $$I(H_i) = 0.44 \\cdot P_i + 0.28 \\cdot B_i + 0.17 \\cdot D_i + 0.11 \\cdot N_i
         "y de densidad."
     )
 
-    top_k_sens = st.slider(
-        "Número de huecos a comparar en el top",
-        min_value=3,
-        max_value=10,
-        value=5,
-        step=1,
-        key="top_k_sens",
-    )
+    top_k_sens = 5
 
     df_sens = df_holes.copy()
     _escenarios_sens = {
