@@ -1715,7 +1715,7 @@ with tab_prior:
     )
 
     # ── Controles ─────────────────────────────────────────────────────────────
-    pr1, pr2, pr3, pr4 = st.columns([2, 2, 1, 1])
+    pr1, pr2, pr4 = st.columns([2, 2, 1])
     with pr1:
         mun_pr = st.selectbox(
             "Alcaldía",
@@ -1727,8 +1727,7 @@ with tab_prior:
             denue[denue["sector"] == "Público"]["subsector"].dropna().unique().tolist()
         )
         subsec_pr = st.selectbox("Subsector público", subsec_opts_pr, key="subsec_pr")
-    with pr3:
-        eps_pr     = st.slider("Radio ε (km)", 0.25, 8.0, 1.5, 0.01, key="eps_pr")
+    eps_pr = 1.5
     with pr4:
         max_pts_pr = st.slider("Máx. puntos", 50, 2500, 2100, 50, key="maxpts_prior")
 
@@ -1916,24 +1915,23 @@ La media μ es el promedio de vida de todos los huecos H₁. Sumar ½σ filtra e
         st.markdown("""
 **Fórmula:**
 
-$$I(H_i) = 0.40 \\cdot P_i + 0.25 \\cdot B_i + 0.15 \\cdot D_i + 0.10 \\cdot R_i + 0.10 \\cdot N_i$$
+$$I(H_i) = 0.44 \\cdot P_i + 0.28 \\cdot B_i + 0.17 \\cdot D_i + 0.11 \\cdot N_i$$
 
 | Variable | Descripción | Fuente | Peso |
 |---|---|---|---|
-| P_i | Persistencia topológica normalizada | Ripser / TDA | 0.40 |
-| B_i | Bajo desarrollo social normalizado | IDS EVALUA CDMX | 0.25 |
-| D_i | Densidad poblacional normalizada | IDS × CONEVAL | 0.15 |
-| R_i | Rezago social normalizado | CONEVAL 2020 | 0.10 |
-| N_i | Proporción de NBI normalizada | IDS EVALUA CDMX | 0.10 |
+| P_i | Persistencia topológica normalizada | Ripser / TDA | 0.44 |
+| B_i | Bajo desarrollo social normalizado | IDS EVALUA CDMX | 0.28 |
+| D_i | Densidad poblacional normalizada | IDS × CONEVAL | 0.17 |
+| N_i | Proporción de NBI normalizada | IDS EVALUA CDMX | 0.11 |
 
 **Ponderaciones del análisis de sensibilidad:**
 
-| Escenario | P_i Persistencia | B_i Bajo desarrollo IDS | D_i Densidad | R_i Rezago social | N_i NBI |
-|---|---:|---:|---:|---:|---:|
-| Base | 0.40 | 0.25 | 0.15 | 0.10 | 0.10 |
-| Topológico | 0.55 | 0.15 | 0.10 | 0.10 | 0.10 |
-| Social | 0.30 | 0.30 | 0.15 | 0.10 | 0.15 |
-| Densidad | 0.35 | 0.20 | 0.25 | 0.10 | 0.10 |
+| Escenario | P_i Persistencia | B_i Bajo desarrollo IDS | D_i Densidad | N_i NBI |
+|---|---:|---:|---:|---:|
+| Base | 0.44 | 0.28 | 0.17 | 0.11 |
+| Topológico | 0.61 | 0.17 | 0.11 | 0.11 |
+| Social | 0.33 | 0.33 | 0.17 | 0.17 |
+| Densidad | 0.39 | 0.22 | 0.28 | 0.11 |
 
         """)
 
