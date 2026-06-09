@@ -3201,7 +3201,7 @@ with tab_concl:
     st.header("Conclusiones y Estrategia de Intervención")
     st.caption(
         "Síntesis ejecutiva del análisis TDA aplicado a la red pública de salud en CDMX: "
-        "hallazgos principales, justificación metodológica y estrategia de intervención."
+        "hallazgos principales, estrategia de intervención y justificación metodológica."
     )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -3234,18 +3234,13 @@ with tab_concl:
         _max_p_exec = 0.0
 
     # ── Índice topológico por alcaldía con 4 escenarios de pesos ────────────
-    # Mismos escenarios que E · Análisis de Sensibilidad de Pesos:
-    #   Base / Topológico / Social / Densidad
-    # Variables por hueco: P_i (persist norm), B_i (bajo desarrollo norm),
-    #   D_i (densidad norm), R_i (rezago norm), N_i (NBI norm)
-    # Municipio: derivado del AGEB más cercano al centro del hueco.
 
-    # 1. Construir AGEB lookup global (igual que tab_prior pero sin filtro)
     _ageb_exec = coneval.merge(
         ids[["cvegeo", "bajo_desarrollo_norm", "prop_nbi_norm",
              "grado_ids", "grado_ids_num", "poblacion_ids"]],
         on="cvegeo", how="left",
     ).copy()
+
     _dens_raw_e = _ageb_exec["poblacion_ids"] / _ageb_exec["area_km2"].replace(0, np.nan)
     _ageb_exec["densidad_norm"] = _dens_raw_e.fillna(0).rank(pct=True)
     _ageb_exec = _ageb_exec.dropna(subset=["centroide_lat", "centroide_lon"]).reset_index(drop=True)
@@ -3253,10 +3248,8 @@ with tab_concl:
     _ageb_exec["municipio"] = _ageb_exec["mun_code"].map(MUN_MAP)
     _ageb_coords_e = np.deg2rad(_ageb_exec[["centroide_lat", "centroide_lon"]].values)
 
-    # 2. Normalizar persistencia sobre huecos significativos
     _h1p_max_e = float(_h1p_fin_exec.max()) if len(_h1p_fin_exec) else 1.0
 
-    # 3. Para cada hueco significativo: asignar AGEB más cercana → variables sociales
     _escenarios_concl = {
         "Base":        {"P_i": 0.40, "B_i": 0.25, "D_i": 0.15, "R_i": 0.10, "N_i": 0.10},
         "Topológico":  {"P_i": 0.55, "B_i": 0.15, "D_i": 0.10, "R_i": 0.10, "N_i": 0.10},
@@ -3265,62 +3258,77 @@ with tab_concl:
     }
 
     _hole_rows = []
+
     if len(_h1c_exec) > 0 and len(_h1p_exec) > 0:
         _sig_mask = (_h1p_exec >= _thr_exec) & ~np.isinf(_h1p_exec)
+
         for _i, (_clat, _clon) in enumerate(_h1c_exec):
             if _i >= len(_sig_mask) or not _sig_mask[_i]:
                 continue
-            _hpt   = np.deg2rad(np.array([[_clat, _clon]]))
-            _dh    = np.arcsin(np.sqrt(
+
+            _hpt = np.deg2rad(np.array([[_clat, _clon]]))
+            _dh = np.arcsin(np.sqrt(
                 np.sin((_ageb_coords_e[:, 0] - _hpt[0, 0]) / 2) ** 2
                 + np.cos(_hpt[0, 0]) * np.cos(_ageb_coords_e[:, 0])
                 * np.sin((_ageb_coords_e[:, 1] - _hpt[0, 1]) / 2) ** 2
             )) * 2 * 6371
-            _ni    = int(_dh.argmin())
+
+            _ni = int(_dh.argmin())
             _row_a = _ageb_exec.iloc[_ni]
+
             P_i = float(_h1p_exec[_i]) / _h1p_max_e
             D_i = float(_row_a.get("densidad_norm", 0) or 0)
             R_i = float(_row_a.get("rezago_norm", 0) or 0)
             B_i = float(_row_a.get("bajo_desarrollo_norm", 0) or 0)
             N_i = float(_row_a.get("prop_nbi_norm", 0) or 0)
+
             _entry = {
-                "municipio":    str(_row_a["municipio"]) if pd.notna(_row_a["municipio"]) else "Desconocido",
+                "municipio": str(_row_a["municipio"]) if pd.notna(_row_a["municipio"]) else "Desconocido",
                 "persistencia": float(_h1p_exec[_i]),
-                "P_i": P_i, "B_i": B_i, "D_i": D_i, "R_i": R_i, "N_i": N_i,
+                "P_i": P_i,
+                "B_i": B_i,
+                "D_i": D_i,
+                "R_i": R_i,
+                "N_i": N_i,
             }
+
             for _esc, _w in _escenarios_concl.items():
                 _entry[f"I_{_esc}"] = sum(_entry[v] * ww for v, ww in _w.items())
+
             _hole_rows.append(_entry)
 
     if _hole_rows:
         _df_h = pd.DataFrame(_hole_rows)
-        # Agregar por municipio: suma de cada índice
+
         _agg_cols = {f"I_{e}": "sum" for e in _escenarios_concl}
         _agg_cols["persistencia"] = ["count", "sum", "mean"]
+
         _df_rank = _df_h.groupby("municipio").agg(_agg_cols)
         _df_rank.columns = (
             [f"I_{e}" for e in _escenarios_concl]
             + ["n_huecos", "persist_total", "persist_media"]
         )
         _df_rank = _df_rank.reset_index()
-        # Normalizar cada escenario a 0-100
+
         for _esc in _escenarios_concl:
             _col = f"I_{_esc}"
-            _mx  = _df_rank[_col].max()
+            _mx = _df_rank[_col].max()
             _df_rank[f"N_{_esc}"] = (_df_rank[_col] / _mx * 100).round(1) if _mx > 0 else 0.0
-        # Rank por escenario (#1 = más vulnerable)
+
         for _esc in _escenarios_concl:
-            _df_rank[f"rk_{_esc}"] = _df_rank[f"N_{_esc}"].rank(ascending=False, method="min").astype(int)
-        # Robustez: cuántos escenarios la ponen en top-3
+            _df_rank[f"rk_{_esc}"] = _df_rank[f"N_{_esc}"].rank(
+                ascending=False, method="min"
+            ).astype(int)
+
         _df_rank["top3_count"] = sum(
             (_df_rank[f"rk_{e}"] <= 3).astype(int) for e in _escenarios_concl
         )
-        # Ordenar por escenario Base
+
         _df_rank = _df_rank.sort_values("N_Base", ascending=False).reset_index(drop=True)
         _worst_mun = str(_df_rank.loc[0, "municipio"])
     else:
         _df_rank = pd.DataFrame()
-        _worst_mun = "Xochimilco"
+        _worst_mun = "Iztapalapa"
 
     # ══════════════════════════════════════════════════════════════════════════
     # 1. RESUMEN EJECUTIVO
@@ -3352,69 +3360,53 @@ with tab_concl:
     st.subheader("1 · Hallazgos principales")
 
     _hallazgos = [
-        (
-            "#d63031",
-            "1. Existen brechas estructurales de cobertura",
-            f"Se detectaron **{_n_sig_exec} huecos H₁ persistentes**. Estos huecos sí desaparecen "
-            f"cuando el radio crece lo suficiente, pero sobreviven durante un rango amplio de escalas; "
-            f"por eso se interpretan como posibles vacíos reales y no como ruido del modelo."
-        ),
-        (
-            "#0984e3",
-            "2. La oferta pública no está distribuida de forma uniforme",
-            "La red de salud pública se concentra más en zonas centrales, mientras que algunas zonas "
-            "periféricas presentan menor densidad relativa de servicios."
-        ),
-        (
-            "#6c5ce7",
-            "3. La vulnerabilidad social aumenta la prioridad de intervención",
-            f"**{_worst_mun}** encabeza el ranking bajo los 4 escenarios de pesos del análisis de "
-            f"sensibilidad (Base, Topológico, Social, Densidad). El índice I(H) por hueco pondera "
-            f"persistencia topológica, rezago social, bajo desarrollo, densidad poblacional y NBI. "
-            f"Que una alcaldía salga primero en múltiples escenarios es evidencia de que el resultado "
-            f"no depende de la elección de pesos. Ver tabla completa en la sección 2."
-        ),
+        ("#d63031", "1. Existen brechas estructurales de cobertura"),
+        ("#0984e3", "2. La cobertura pública no está distribuida de forma uniforme"),
+        ("#6c5ce7", f"3. {_worst_mun}, Xochimilco y Tlalpan concentran la mayor prioridad de intervención"),
     ]
 
-    for _color, _title, _text in _hallazgos:
+    for _color, _title in _hallazgos:
         st.markdown(
-            f"<div style='border-left:5px solid {_color};background:#f8f9fa;"
-            f"padding:14px 18px;border-radius:6px;margin-bottom:10px'>"
-            f"<b style='color:{_color}'>{_title}</b><br>"
-            f"<span style='color:#444;font-size:0.93em;line-height:1.6'>{_text}</span>"
-            f"</div>",
+            f"""
+            <div style="
+                border-left:5px solid {_color};
+                background:#f8f9fa;
+                padding:18px;
+                border-radius:8px;
+                margin-bottom:12px;
+            ">
+                <span style="
+                    color:{_color};
+                    font-weight:700;
+                    font-size:1.08rem;
+                ">
+                    {_title}
+                </span>
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
     st.divider()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 2b. RANKING POR ALCALDÍA — Índice I(H)
+    # 3. RANKING POR ALCALDÍA
     # ══════════════════════════════════════════════════════════════════════════
 
     st.subheader("2 · Ranking de alcaldías por vulnerabilidad topológica")
     st.caption(
-        "El índice I(H) = n° huecos × persistencia media × rezago social (1–5). "
-        "Combina la evidencia topológica con el contexto socioeconómico."
-    )
-
-    st.markdown(
-        "<div style='background:#fff3cd;border-left:4px solid #f39c12;"
-        "padding:10px 14px;border-radius:4px;margin-bottom:12px;font-size:0.88em'>"
-        "<b>¿Por qué este índice?</b> El mapa de huecos H₁ muestra su ubicación, pero no determina "
-        "por sí solo qué alcaldía es la más afectada. Para eso se necesita agrupar los huecos por "
-        "alcaldía, ponderar su persistencia (gravedad topológica) y cruzar con rezago social "
-        "(gravedad socioeconómica). La alcaldía con mayor I(H) es la que concentra vacíos más "
-        "graves en zonas de mayor vulnerabilidad.</div>",
-        unsafe_allow_html=True,
+        "El ranking agrupa los huecos por alcaldía y evalúa su prioridad bajo cuatro escenarios: "
+        "Base, Topológico, Social y Densidad."
     )
 
     if not _df_rank.empty:
         _esc_colors = {
-            "Base": "#0984e3", "Topológico": "#6c5ce7",
-            "Social": "#00b894", "Densidad": "#e17055",
+            "Base": "#0984e3",
+            "Topológico": "#6c5ce7",
+            "Social": "#00b894",
+            "Densidad": "#e17055",
         }
-        # Cabecera
+
         _tbl_head = (
             "<tr style='background:#2d3436;color:#fff'>"
             "<th style='padding:8px 10px'>#</th>"
@@ -3425,26 +3417,31 @@ with tab_concl:
                 f"<th style='padding:8px 10px;color:{_esc_colors[e]}'>{e}</th>"
                 for e in _escenarios_concl
             )
-            + "<th style='padding:8px 10px'>Top-3 (de 4)</th>"
+            + "<th style='padding:8px 10px'>Top-3</th>"
             "</tr>"
         )
+
         _tbl_rows = ""
+
         for _ri, _row in _df_rank.iterrows():
             _rank_n = _ri + 1
             _bg = "#fff5f5" if _rank_n == 1 else ("#f8f9fa" if _ri % 2 == 0 else "#fff")
             _fw = "700" if _rank_n == 1 else "400"
             _medal = "#1" if _rank_n == 1 else ("#2" if _rank_n == 2 else ("#3" if _rank_n == 3 else str(_rank_n)))
+
             _cells = (
                 f"<td style='padding:7px 10px;text-align:center'>{_medal}</td>"
                 f"<td style='padding:7px 10px;font-weight:{_fw}'>{_row['municipio']}</td>"
                 f"<td style='padding:7px 10px;text-align:center'>{int(_row['n_huecos'])}</td>"
                 f"<td style='padding:7px 10px;text-align:center'>{_row['persist_media']:.2f} km</td>"
             )
+
             for _esc in _escenarios_concl:
-                _v   = _row[f"N_{_esc}"]
-                _rk  = int(_row[f"rk_{_esc}"])
-                _c   = _esc_colors[_esc]
-                _bw  = max(3, int(_v * 0.6))
+                _v = _row[f"N_{_esc}"]
+                _rk = int(_row[f"rk_{_esc}"])
+                _c = _esc_colors[_esc]
+                _bw = max(3, int(_v * 0.6))
+
                 _cells += (
                     f"<td style='padding:7px 10px'>"
                     f"<div style='display:flex;align-items:center;gap:5px'>"
@@ -3452,9 +3449,11 @@ with tab_concl:
                     f"<span style='color:{_c};font-size:0.85em'>{_v} <sup>#{_rk}</sup></span>"
                     f"</div></td>"
                 )
+
             _t3 = int(_row["top3_count"])
             _t3c = "#d63031" if _t3 == 4 else ("#e17055" if _t3 >= 3 else ("#fdcb6e" if _t3 >= 2 else "#b2bec3"))
             _cells += f"<td style='padding:7px 10px;text-align:center;color:{_t3c};font-weight:700'>{_t3}/4</td>"
+
             _tbl_rows += f"<tr style='background:{_bg}'>{_cells}</tr>"
 
         st.markdown(
@@ -3462,11 +3461,11 @@ with tab_concl:
             f"<thead>{_tbl_head}</thead><tbody>{_tbl_rows}</tbody></table>",
             unsafe_allow_html=True,
         )
+
         st.caption(
-            "Cada escenario usa los mismos pesos que E · Análisis de Sensibilidad de Pesos "
-            "(Base / Topológico / Social / Densidad). El valor mostrado es I(H) normalizado a 100; "
-            "el superíndice es la posición en ese escenario. **Top-3** = cuántos escenarios ubican "
-            f"a esa alcaldía entre las 3 más vulnerables. Alcaldía #1 (escenario Base): **{_worst_mun}**."
+            "Los valores de cada escenario están normalizados a 100. El superíndice indica la posición "
+            "en el ranking de ese escenario. Top-3 muestra en cuántos escenarios la alcaldía aparece "
+            "entre las tres más prioritarias."
         )
     else:
         st.info("No se encontraron huecos significativos para construir el ranking.")
@@ -3474,82 +3473,10 @@ with tab_concl:
     st.divider()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 3. ¿POR QUÉ TDA?
-    # ══════════════════════════════════════════════════════════════════════════
-
-    st.subheader("3 · ¿Por qué TDA es el método indicado?")
-    st.caption(
-        "TDA es útil porque analiza la forma de la red, no solamente la distancia o la similitud entre zonas."
-    )
-
-    _comp_headers = [
-        "Capacidad",
-        "Buffer / isocrona",
-        "K-Means",
-        "Regresión espacial",
-        "TDA"
-    ]
-
-    _comp_rows = [
-        ("Detecta huecos en la red de servicios", "No", "No", "Parcial", "Sí"),
-        ("Evalúa estabilidad al cambiar el radio", "No", "No", "Varía", "Sí, por persistencia"),
-        ("No depende de clusters circulares", "Sí", "No", "Parcial", "Sí"),
-        ("Mide la gravedad del hueco", "No", "No", "Parcial", "Sí, por vida del feature"),
-        ("Detecta huecos que cruzan varios clusters", "No", "No", "No", "Sí"),
-        ("Integra variables sociales", "Parcial", "Sí", "Sí", "Sí, con índice I(H)"),
-        ("Sirve para priorizar intervención", "Parcial", "Parcial", "Parcial", "Sí"),
-    ]
-
-    _s_yes = "background:#d4edda;color:#155724;font-weight:600;border-radius:4px;padding:2px 7px"
-    _s_no = "background:#f8d7da;color:#721c24;border-radius:4px;padding:2px 7px"
-    _s_part = "background:#fff3cd;color:#856404;border-radius:4px;padding:2px 7px"
-
-    def _badge(v):
-        if v.startswith("Sí"):
-            return f"<span style='{_s_yes}'>{v}</span>"
-        elif v == "No":
-            return f"<span style='{_s_no}'>{v}</span>"
-        else:
-            return f"<span style='{_s_part}'>{v}</span>"
-
-    _th = "".join(
-        f"<th style='background:#2d3436;color:#fff;padding:8px 10px;text-align:left'>{h}</th>"
-        for h in _comp_headers
-    )
-
-    _tb = ""
-    for _i, (_cap, *_vals) in enumerate(_comp_rows):
-        _bg = "#f8f9fa" if _i % 2 == 0 else "#ffffff"
-        _tb += f"<tr style='background:{_bg}'><td style='padding:7px 10px'>{_cap}</td>"
-        _tb += "".join(
-            f"<td style='padding:7px 10px;text-align:center'>{_badge(v)}</td>"
-            for v in _vals
-        )
-        _tb += "</tr>"
-
-    st.markdown(
-        f"<table style='width:100%;border-collapse:collapse;font-size:0.88em'>"
-        f"<thead><tr>{_th}</tr></thead><tbody>{_tb}</tbody></table>",
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        "<div style='background:#0984e3;color:#fff;padding:14px 18px;"
-        "border-radius:8px;margin-top:12px'>"
-        "<b>Lectura clave:</b> Buffer mide cercanía, K-Means agrupa zonas parecidas "
-        "y la regresión explica relaciones entre variables. TDA es el método indicado porque "
-        "detecta huecos en la forma de la red, mide su estabilidad y permite priorizarlos con datos sociales."
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-    st.divider()
-
-    # ══════════════════════════════════════════════════════════════════════════
     # 4. ESTRATEGIA DE INTERVENCIÓN
     # ══════════════════════════════════════════════════════════════════════════
 
-    st.subheader("4 · Estrategia de intervención")
+    st.subheader("3 · Estrategia de intervención")
 
     st.markdown(
         """
@@ -3565,8 +3492,7 @@ identificar dónde están las brechas, medir cuáles son más importantes y deci
             "<div style='background:#f8f9fa;border-left:5px solid #00b894;"
             "padding:15px;border-radius:6px;height:170px'>"
             "<b style='color:#00b894'>¿A quién va dirigida?</b><br><br>"
-            "Principalmente a gobierno, alcaldías e instituciones de salud que necesitan decidir "
-            "dónde invertir recursos limitados."
+            "A gobierno, alcaldías e instituciones de salud que necesitan decidir dónde invertir recursos limitados."
             "</div>",
             unsafe_allow_html=True,
         )
@@ -3600,8 +3526,8 @@ identificar dónde están las brechas, medir cuáles son más importantes y deci
 1. Detectar huecos H₁ persistentes en la red pública de salud.  
 2. Cruzarlos con IDS, rezago, NBI y densidad poblacional.  
 3. Priorizar las zonas con mayor índice I(H).  
-4. Validar en campo qué tipo de intervención conviene: nueva unidad, ampliación de servicios, brigadas móviles o mejor conexión territorial.  
-5. Actualizar el análisis con nuevas bases públicas para dar seguimiento en el tiempo.
+4. Validar en campo qué intervención conviene: nueva unidad, ampliación de servicios, brigadas móviles o mejor conexión territorial.  
+5. Actualizar el análisis con nuevas bases públicas para dar seguimiento.
         """
     )
 
@@ -3613,7 +3539,119 @@ identificar dónde están las brechas, medir cuáles son más importantes y deci
     st.divider()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 5. CIERRE EJECUTIVO
+    # 5. ¿POR QUÉ TDA?
+    # ══════════════════════════════════════════════════════════════════════════
+
+    st.subheader("4 · ¿Por qué TDA es el método indicado?")
+
+    st.markdown(
+        """
+TDA es el método indicado porque no solo mide distancia entre una zona y una unidad de salud; 
+analiza la **forma completa de la red**. Esto permite detectar huecos de cobertura, medir si son estables 
+al cambiar el radio y después cruzarlos con variables sociales para priorizar intervención.
+        """
+    )
+
+    ctda1, ctda2, ctda3 = st.columns(3)
+
+    with ctda1:
+        st.markdown(
+            "<div style='background:#f8f9fa;border-left:5px solid #d63031;"
+            "padding:14px;border-radius:6px;height:135px'>"
+            "<b style='color:#d63031'>Detecta huecos</b><br><br>"
+            "Identifica vacíos en la red que un buffer tradicional puede pasar por alto."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    with ctda2:
+        st.markdown(
+            "<div style='background:#f8f9fa;border-left:5px solid #0984e3;"
+            "padding:14px;border-radius:6px;height:135px'>"
+            "<b style='color:#0984e3'>Mide estabilidad</b><br><br>"
+            "La persistencia permite distinguir huecos relevantes de ruido del modelo."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    with ctda3:
+        st.markdown(
+            "<div style='background:#f8f9fa;border-left:5px solid #00b894;"
+            "padding:14px;border-radius:6px;height:135px'>"
+            "<b style='color:#00b894'>Prioriza con contexto</b><br><br>"
+            "Combina evidencia topológica con rezago, IDS, densidad y NBI."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    with st.expander("Ver tabla comparativa de métodos", expanded=False):
+
+        _comp_headers = [
+            "Capacidad",
+            "Buffer / isocrona",
+            "K-Means",
+            "Regresión espacial",
+            "TDA",
+        ]
+
+        _comp_rows = [
+            ("Detecta huecos en la red de servicios", "No", "No", "Parcial", "Sí"),
+            ("Evalúa estabilidad al cambiar el radio", "No", "No", "Varía", "Sí, por persistencia"),
+            ("No depende de clusters circulares", "Sí", "No", "Parcial", "Sí"),
+            ("Mide la gravedad del hueco", "No", "No", "Parcial", "Sí, por vida del feature"),
+            ("Detecta huecos que cruzan varios clusters", "No", "No", "No", "Sí"),
+            ("Integra variables sociales", "Parcial", "Sí", "Sí", "Sí, con índice I(H)"),
+            ("Sirve para priorizar intervención", "Parcial", "Parcial", "Parcial", "Sí"),
+        ]
+
+        _s_yes = "background:#d4edda;color:#155724;font-weight:600;border-radius:4px;padding:2px 7px"
+        _s_no = "background:#f8d7da;color:#721c24;border-radius:4px;padding:2px 7px"
+        _s_part = "background:#fff3cd;color:#856404;border-radius:4px;padding:2px 7px"
+
+        def _badge(v):
+            if v.startswith("Sí"):
+                return f"<span style='{_s_yes}'>{v}</span>"
+            elif v == "No":
+                return f"<span style='{_s_no}'>{v}</span>"
+            else:
+                return f"<span style='{_s_part}'>{v}</span>"
+
+        _th = "".join(
+            f"<th style='background:#2d3436;color:#fff;padding:8px 10px;text-align:left'>{h}</th>"
+            for h in _comp_headers
+        )
+
+        _tb = ""
+
+        for _i, (_cap, *_vals) in enumerate(_comp_rows):
+            _bg = "#f8f9fa" if _i % 2 == 0 else "#ffffff"
+            _tb += f"<tr style='background:{_bg}'><td style='padding:7px 10px'>{_cap}</td>"
+            _tb += "".join(
+                f"<td style='padding:7px 10px;text-align:center'>{_badge(v)}</td>"
+                for v in _vals
+            )
+            _tb += "</tr>"
+
+        st.markdown(
+            f"<table style='width:100%;border-collapse:collapse;font-size:0.88em'>"
+            f"<thead><tr>{_th}</tr></thead><tbody>{_tb}</tbody></table>",
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            "<div style='background:#0984e3;color:#fff;padding:14px 18px;"
+            "border-radius:8px;margin-top:12px'>"
+            "<b>Lectura clave:</b> Buffer mide cercanía, K-Means agrupa zonas parecidas "
+            "y la regresión explica relaciones entre variables. TDA es el método indicado porque "
+            "detecta huecos en la forma de la red, mide su estabilidad y permite priorizarlos con datos sociales."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 6. CIERRE EJECUTIVO
     # ══════════════════════════════════════════════════════════════════════════
 
     st.subheader("5 · Cierre ejecutivo")
