@@ -3218,7 +3218,7 @@ with tab_concl:
         _pts_exec = _pts_exec[_rng_exec.choice(len(_pts_exec), 2100, replace=False)]
 
     with st.spinner("Calculando métricas globales…"):
-        _dgms_exec, _, _ = _compute_tda_full(tuple(map(tuple, _pts_exec)))
+        _dgms_exec, _, _h1c_exec = _compute_tda_full(tuple(map(tuple, _pts_exec)))
 
     _h1_exec = np.array(_dgms_exec[1]) if len(_dgms_exec[1]) else np.empty((0, 2))
     _h1p_exec = (_h1_exec[:, 1] - _h1_exec[:, 0]) if len(_h1_exec) else np.array([])
@@ -3235,24 +3235,38 @@ with tab_concl:
         _n_sig_exec = 0
         _max_p_exec = 0.0
 
-    _rez_num_map = {"Muy bajo": 1, "Bajo": 2, "Medio": 3, "Alto": 4, "Muy alto": 5}
-    _pub_by_mun = _pub_exec.groupby("municipio").size()
+    # Alcaldía más vulnerable = la que tiene más huecos H1 significativos.
+    # Para cada hueco, se asigna la alcaldía de la unidad pública más cercana a su centro.
+    _pub_exec_idx = _pub_exec.reset_index(drop=True)
+    _pub_coords = _pub_exec_idx[["latitud", "longitud"]].values
+    _hole_muns = []
+    if len(_h1c_exec) > 0 and len(_h1p_exec) > 0:
+        _sig_mask = (_h1p_exec >= _thr_exec) & ~np.isinf(_h1p_exec)
+        _sig_centers = [_h1c_exec[i] for i in range(len(_h1c_exec)) if i < len(_sig_mask) and _sig_mask[i]]
+        for _clat, _clon in _sig_centers:
+            _dists = np.sqrt((_pub_coords[:, 0] - _clat) ** 2 + (_pub_coords[:, 1] - _clon) ** 2)
+            _nearest_idx = int(_dists.argmin())
+            _hole_muns.append(_pub_exec_idx.loc[_nearest_idx, "municipio"])
 
-    _ageb_by_mun = coneval.copy()
-    _ageb_by_mun["mun_code"] = _ageb_by_mun["cvegeo"].astype(str).str[2:5]
-    _ageb_by_mun["mun_name"] = _ageb_by_mun["mun_code"].map(MUN_MAP)
-
-    _rez_score = (
-        _ageb_by_mun.dropna(subset=["mun_name"])
-        .assign(rez_num=lambda df: df["grado_rezago_social"].map(_rez_num_map).astype(float))
-        .groupby("mun_name")["rez_num"]
-        .mean()
-    )
-
-    _pub_density = _pub_by_mun / (_ageb_by_mun.groupby("mun_name").size().replace(0, np.nan))
-    _vuln_score = _rez_score / (_pub_density + 1e-9)
-
-    _worst_mun = str(_vuln_score.idxmax()) if len(_vuln_score) else "Xochimilco"
+    if _hole_muns:
+        _holes_by_mun = pd.Series(_hole_muns).value_counts()
+        _worst_mun = str(_holes_by_mun.idxmax())
+    else:
+        # Fallback: rezago / densidad
+        _rez_num_map = {"Muy bajo": 1, "Bajo": 2, "Medio": 3, "Alto": 4, "Muy alto": 5}
+        _ageb_by_mun = coneval.copy()
+        _ageb_by_mun["mun_code"] = _ageb_by_mun["cvegeo"].astype(str).str[2:5]
+        _ageb_by_mun["mun_name"] = _ageb_by_mun["mun_code"].map(MUN_MAP)
+        _rez_score = (
+            _ageb_by_mun.dropna(subset=["mun_name"])
+            .assign(rez_num=lambda df: df["grado_rezago_social"].map(_rez_num_map).astype(float))
+            .groupby("mun_name")["rez_num"]
+            .mean()
+        )
+        _pub_by_mun = _pub_exec.groupby("municipio").size()
+        _pub_density = _pub_by_mun / (_ageb_by_mun.groupby("mun_name").size().replace(0, np.nan))
+        _vuln_score = _rez_score / (_pub_density + 1e-9)
+        _worst_mun = str(_vuln_score.idxmax()) if len(_vuln_score) else "Xochimilco"
 
     # ══════════════════════════════════════════════════════════════════════════
     # 1. RESUMEN EJECUTIVO
